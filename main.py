@@ -422,15 +422,15 @@ def generate_raw_signal(asset_type: str) -> Dict:
 
 
 # ====================================================================================
-# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - المطابقة لنسختك مع إضافة raw_response
+# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - المعدلة بالكامل
 # ====================================================================================
 
 class AICore:
-    """المحرك الذكي للبوت - مع منطق احتياطي قوي"""
+    """المحرك الذكي للبوت - يعتمد على النماذج بنسبة 90%"""
     
     def __init__(self):
         self.gemini_model = None
-        self.groq_model = "openai/gpt-oss-120b"  # ✅ كما هو في نسختك، لم أغير شيئاً
+        self.groq_model = "openai/gpt-oss-120b"
         
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
@@ -471,7 +471,7 @@ class AICore:
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": self.groq_model,  # ✅ openai/gpt-oss-120b كما في نسختك
+                "model": self.groq_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens": max_tokens,
@@ -498,13 +498,17 @@ class AICore:
         return None
     
     def analyze_market(self, asset: str, data: Dict, open_trade: Optional[Dict] = None) -> Dict:
-        """تحليل شامل للسوق - مع إضافة raw_response للتشخيص"""
+        """
+        تحليل شامل للسوق يعتمد كلياً على النموذج.
+        يُعيد تحليل النموذج كاملاً دون أي تدخل يدوي.
+        """
         closes = data.get("closes", [])
         if not closes:
-            return {"error": "لا توجد بيانات"}
+            return {"analysis": "⚠️ لا توجد بيانات كافية للتحليل."}
         
         price = closes[-1]
         
+        # حساب المؤشرات الأساسية (تُستخدم فقط في الـ Prompt)
         rsi_values = calculate_rsi_7(closes)
         rsi = rsi_values[-1] if rsi_values else 50
         
@@ -513,6 +517,7 @@ class AICore:
         
         adx = calculate_adx_14(data) or 20
         
+        # تحليل الفريمات
         timeframes = {}
         for tf, interval in [("5m", "Min5"), ("15m", "Min15"), ("1h", "Min60"), ("4h", "Hour4")]:
             tf_data = get_mexc_candles("USOIL_USDT" if asset == "oil" else "SILVER_USDT", interval, 100)
@@ -541,121 +546,65 @@ class AICore:
         bearish_count = sum(1 for t in timeframes.values() if t == "هابط")
         total_frames = len(timeframes)
         
-        manual_score = 50
-        if rsi > 70:
-            manual_score -= 10
-        elif rsi < 30:
-            manual_score += 10
-        
-        if adx > 25:
-            manual_score += 10
-        elif adx < 20:
-            manual_score -= 10
-        
-        if bullish_count >= 3:
-            manual_score += 10
-        elif bearish_count >= 3:
-            manual_score -= 10
-        
-        manual_score = max(0, min(100, manual_score))
-        
-        if manual_score >= 65:
-            manual_eval = "جيد"
-        elif manual_score >= 45:
-            manual_eval = "متوسط"
-        else:
-            manual_eval = "ضعيف"
-        
-        prompt = f"""حلل السوق التالي وأجب بالصيغة المطلوبة فقط.
+        # بناء الـ Prompt
+        prompt = f"""أنت خبير تداول محترف في أسواق النفط والفضة. قم بتحليل شامل ومختصر للسوق بناءً على البيانات التالية، واكتب تقييمك ونصيحتك بأسلوب مهني وواضح.
 
-السعر: ${price:.2f}
-RSI: {rsi:.1f}
-ADX: {adx:.1f}
-MACD: {macd:.4f}
-الفريمات الصاعدة: {bullish_count}/{total_frames}
-الفريمات الهابطة: {bearish_count}/{total_frames}
-
-المطلوب:
-التقييم: [ممتاز/جيد/متوسط/ضعيف/سيئ]
-الدرجة: [0-100]
-الأسباب: [3 أسباب على الأقل]
-نصيحة: [نصيحة مختصرة]
-مستوى الخطر: [1/2/3]
+📊 **بيانات السوق الحالية:**
+• الأصل: {asset}
+• السعر الحالي: ${price:.2f}
+• RSI (14): {rsi:.1f}
+• ADX (14): {adx:.1f}
+• MACD Histogram: {macd:.4f}
+• الفريمات الصاعدة: {bullish_count}/{total_frames}
+• الفريمات الهابطة: {bearish_count}/{total_frames}
+• تفاصيل الفريمات: 5m: {timeframes.get('5m', 'N/A')}, 15m: {timeframes.get('15m', 'N/A')}, 1h: {timeframes.get('1h', 'N/A')}, 4h: {timeframes.get('4h', 'N/A')}
 """
         
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
             profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
-            prompt += f"\nالصفقة المفتوحة: {trade_type} | {profit_pct:+.2f}%"
+            prompt += f"""
+📈 **الصفقة المفتوحة حالياً:**
+• النوع: {trade_type}
+• سعر الدخول: ${entry:.2f}
+• الربح/الخسارة الحالية: {profit_pct:+.2f}%
+• وقف الخسارة: ${open_trade.get('sl', 0):.2f}
+• الهدف: ${open_trade.get('tp', 0):.2f}
+"""
         
-        response = self._call_model(prompt, max_tokens=400)
+        prompt += """
+
+📝 **المطلوب:**
+اكتب تحليلاً موجزاً (لا يتجاوز 150 كلمة) يحتوي على:
+1. تقييم عام للوضع الحالي.
+2. نقاط القوة والضعف في السوق.
+3. نصيحة عملية للمتداول (شراء، بيع، انتظار، أو إغلاق الصفقة المفتوحة إن وجدت).
+
+⚠️ **ملاحظة:** كن دقيقاً ومختصراً، وتجنب الإطالة.
+"""
         
-        result = {
-            "evaluation": manual_eval,
-            "score": manual_score,
+        # استدعاء النموذج
+        response = self._call_model(prompt, max_tokens=600)
+        
+        # إذا فشل النموذج، نرسل رسالة واضحة
+        if not response:
+            logger.error(f"❌ فشل الحصول على تحليل من النموذج لـ {asset}")
+            return {"analysis": "⚠️ تعذر الحصول على تحليل من النموذج حالياً. يرجى المحاولة مرة أخرى."}
+        
+        logger.info(f"✅ تحليل {asset}: تم الحصول على رد من النموذج (طول: {len(response)})")
+        
+        return {
+            "analysis": response,  # تحليل النموذج كاملاً
+            "evaluation": "مباشر من النموذج",
+            "score": 0,
             "reasons": [],
             "advice": "",
-            "risk_level": 1,
-            "raw_response": response  # <--- إضافة الرد الخام للتشخيص
+            "risk_level": 1
         }
-        
-        if response:
-            eval_match = re.search(r'التقييم:\s*(.+)', response)
-            if eval_match:
-                result["evaluation"] = eval_match.group(1).strip()
-            
-            score_match = re.search(r'الدرجة:\s*(\d+)', response)
-            if score_match:
-                try:
-                    result["score"] = min(100, max(0, int(score_match.group(1))))
-                except:
-                    pass
-            
-            reasons_match = re.search(r'الأسباب:\s*(.+)', response, re.DOTALL)
-            if reasons_match:
-                reasons_text = reasons_match.group(1).strip()
-                reasons = [r.strip() for r in re.split(r'[،،,]', reasons_text) if r.strip()]
-                if reasons:
-                    result["reasons"] = reasons[:5]
-            
-            advice_match = re.search(r'نصيحة:\s*(.+)', response)
-            if advice_match:
-                result["advice"] = advice_match.group(1).strip()
-            
-            risk_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
-            if risk_match:
-                try:
-                    result["risk_level"] = min(3, max(1, int(risk_match.group(1))))
-                except:
-                    pass
-        
-        if result["score"] < 10 or result["score"] > 100:
-            result["score"] = manual_score
-            result["evaluation"] = manual_eval
-        
-        if not result["reasons"]:
-            result["reasons"] = [
-                f"السعر الحالي: ${price:.2f}",
-                f"RSI: {rsi:.1f} ({'مرتفع' if rsi > 70 else 'منخفض' if rsi < 30 else 'محايد'})",
-                f"ADX: {adx:.1f} ({'قوي' if adx > 25 else 'ضعيف'})",
-                f"{bullish_count}/{total_frames} فريمات صاعدة",
-                f"{bearish_count}/{total_frames} فريمات هابطة"
-            ]
-        
-        if not result["advice"]:
-            if bullish_count >= 3:
-                result["advice"] = "الاتجاه العام صاعد، فكر في صفقات شراء مع إدارة المخاطر."
-            elif bearish_count >= 3:
-                result["advice"] = "الاتجاه العام هابط، فكر في صفقات بيع أو الانتظار."
-            else:
-                result["advice"] = "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة."
-        
-        logger.info(f"✅ تحليل {asset}: score={result['score']}, risk={result['risk_level']}")
-        return result
     
     def generate_alert(self, asset: str, open_trade: Dict, current_data: Dict) -> Dict:
-        """تحليل الخطر للصفقة المفتوحة"""
+        """تحليل الخطر للصفقة المفتوحة - يعتمد على النموذج"""
         price = current_data.get("price", 0)
         if not price:
             return {"level": 1, "message": "لا توجد بيانات", "action": "notify"}
@@ -688,9 +637,7 @@ MACD: {macd:.4f}
         
         prompt = f"""أنت خبير إدارة مخاطر. قم بتحليل الخطر للصفقة التالية وأجب بالصيغة المطلوبة فقط.
 
-═══════════════════════════════════════
 📊 بيانات الصفقة:
-═══════════════════════════════════════
 • الأصل: {asset}
 • النوع: {trade_type}
 • سعر الدخول: ${entry:.2f}
@@ -702,9 +649,7 @@ MACD: {macd:.4f}
 • MACD Histogram: {macd_val:.4f}
 • ATR: {atr:.4f} ({(atr/price*100) if price > 0 else 0:.2f}%)
 
-═══════════════════════════════════════
 المطلوب (أجب بالصيغة التالية فقط):
-═══════════════════════════════════════
 مستوى الخطر: [1/2/3]  (1=آمن، 2=مراقبة، 3=خطر داهم يستدعي الإغلاق)
 الرسالة: [رسالة تحذيرية مختصرة]
 
@@ -741,9 +686,7 @@ MACD: {macd:.4f}
         
         prompt = f"""أنت خبير تعلم آلي في الأسواق المالية. قم بتحليل الصفقة التالية واستخلص درساً وسيناريو.
 
-═══════════════════════════════════════
 📊 بيانات الصفقة:
-═══════════════════════════════════════
 • الأصل: {trade_data.get('asset', 'unknown')}
 • النوع: {trade_data.get('type', 'UNKNOWN')}
 • سعر الدخول: ${entry_price:.2f}
@@ -764,14 +707,10 @@ MACD: {macd:.4f}
    • MACD: {trade_data.get('exit_macd', 'N/A')}
    • الاتجاه: {trade_data.get('exit_trend', 'N/A')}
 
-═══════════════════════════════════════
 سياق السوق الحالي:
-═══════════════════════════════════════
 {market_context}
 
-═══════════════════════════════════════
 المطلوب (أجب بالصيغة التالية فقط):
-═══════════════════════════════════════
 الدرس: [جملة واحدة مختصرة]
 السيناريو: [وصف الظروف التي أدت إلى هذه النتيجة]
 الشرط: [شرط مستقبلي للتعرف على هذا السيناريو]
@@ -824,14 +763,10 @@ MACD: {macd:.4f}
         
         prompt = f"""أنت خبير تحليل أسواق. قم بتحليل سلوك سوق {asset} بناءً على آخر الصفقات واكتب وصفاً مختصراً.
 
-═══════════════════════════════════════
 آخر الصفقات:
-═══════════════════════════════════════
 {trades_summary}
 
-═══════════════════════════════════════
 المطلوب:
-═══════════════════════════════════════
 اكتب فقرة واحدة (لا تتجاوز 100 كلمة) تصف فيها:
 1. الاتجاه العام للسوق حالياً.
 2. مستوى التقلب.
@@ -862,23 +797,17 @@ MACD: {macd:.4f}
         
         prompt = f"""أنت خبير استخبارات مالية. قم بتوليد تقرير استخباراتي شامل عن سوق {asset}.
 
-═══════════════════════════════════════
 إحصائيات الأداء:
-═══════════════════════════════════════
 • إجمالي الصفقات المغلقة: {len(closed_trades)}
 • الصفقات الرابحة: {len(wins)}
 • الصفقات الخاسرة: {len(losses)}
 • نسبة النجاح: {win_rate:.1f}%
 • إجمالي الربح: ${total_profit:.2f}
 
-═══════════════════════════════════════
 شخصية السوق الحالية:
-═══════════════════════════════════════
 {market_profile}
 
-═══════════════════════════════════════
 المطلوب:
-═══════════════════════════════════════
 اكتب تقريراً استخباراتياً موجزاً (150-200 كلمة) يحتوي على:
 1. تحليل أداء السوق.
 2. نقاط القوة والضعف.
@@ -1450,7 +1379,7 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 
 
 # ====================================================================================
-# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة (مع عرض raw_response)
+# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة
 # ====================================================================================
 
 app = Flask(__name__)
@@ -1489,15 +1418,12 @@ def webhook():
 
 
 def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
-    """إرسال رسالة مباشرة إلى Telegram"""
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN غير موجود")
         return False
-    
     if not chat_id:
         logger.error("❌ chat_id غير موجود")
         return False
-    
     with TELEGRAM_SEND_LOCK:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         try:
@@ -1518,7 +1444,6 @@ def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
 
 
 def queue_telegram_message(text: str, chat_id: str = None):
-    """إرسال رسالة مباشرة"""
     if not text or text.strip() == "":
         return False
     target = chat_id or CHAT_ID
@@ -1535,7 +1460,6 @@ def queue_telegram_message(text: str, chat_id: str = None):
 
 
 def send_main_menu(chat_id: str):
-    """إرسال القائمة الرئيسية"""
     keyboard = [
         ["🛢️ تحليل النفط", "🥈 تحليل الفضة"],
         ["🔍 وضع الصفقة الحالية", "📊 تقرير الأداء"],
@@ -1574,10 +1498,6 @@ def send_main_menu(chat_id: str):
 
 
 def analyze_timeframes(asset_type: str) -> Dict[str, str]:
-    """
-    تحليل الفريمات الأربعة (5m, 15m, 1h, 4h)
-    بنفس طريقة البوت القديم V13.0
-    """
     result = {}
     symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
     st_mult = 2.5 if asset_type == "oil" else 2.2
@@ -1592,18 +1512,11 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
     for name, interval in timeframes.items():
         try:
             data = get_mexc_candles(symbol, interval, 200)
-            
             if not data or not data.get("closes") or len(data["closes"]) < 50:
-                result[name] = "محايد ⚪ (بيانات غير كافية)"
+                result[name] = "محايد ⚪"
                 continue
             
-            st_result = calculate_supertrend_vpt_correct(
-                data,
-                st_mult=st_mult,
-                st_period=100,
-                vpt_len=10
-            )
-            
+            st_result = calculate_supertrend_vpt_correct(data, st_mult=st_mult, st_period=100, vpt_len=10)
             if st_result is None:
                 closes = data["closes"]
                 if len(closes) >= 20:
@@ -1620,7 +1533,6 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
                 continue
             
             st_line_arr, trend, _ = st_result
-            
             if not trend or len(trend) == 0:
                 result[name] = "محايد ⚪"
                 continue
@@ -1634,13 +1546,13 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
                 
         except Exception as e:
             logger.warning(f"⚠️ فشل تحليل {name} لـ {asset_type}: {e}")
-            result[name] = "محايد ⚪ (خطأ)"
+            result[name] = "محايد ⚪"
     
     return result
 
 
 def handle_analysis(asset_type: str, chat_id: str):
-    """معالجة طلب التحليل الشامل – مع عرض رد النموذج الخام"""
+    """معالجة طلب التحليل الشامل – يعرض تحليل النموذج مباشرة"""
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     
     try:
@@ -1673,29 +1585,18 @@ def handle_analysis(asset_type: str, chat_id: str):
         
         open_trade = get_current_open_trade(asset_type)
         
-        # استدعاء تحليل الذكاء الاصطناعي (سيحتوي على raw_response)
+        # استدعاء تحليل الذكاء الاصطناعي (يعيد تحليل النموذج كاملاً)
         ai_analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
         
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
         
-        evaluation = ai_analysis.get('evaluation', 'متوسط')
-        score = ai_analysis.get('score', 50)
-        risk_level = ai_analysis.get('risk_level', 1)
-        reasons = ai_analysis.get('reasons', [])
-        advice = ai_analysis.get('advice', '')
-        raw_response = ai_analysis.get('raw_response', '')
+        # التحليل من النموذج
+        model_analysis = ai_analysis.get('analysis', '')
         
-        if score < 10:
-            score = 50
-            evaluation = "متوسط"
-        
-        # ── بناء التقرير ──
+        # بناء التقرير مع تحليل النموذج
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg += f"💰 **السعر الحالي:** ${safe_price(price)}\n"
-        msg += f"📈 **التقييم:** {evaluation}\n"
-        msg += f"📊 **الدرجة:** {score}/100\n"
-        msg += f"⚠️ **مستوى الخطر:** {risk_level}/3\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
         msg += "🕐 **تحليل الفريمات الزمنية:**\n"
@@ -1712,52 +1613,21 @@ def handle_analysis(asset_type: str, chat_id: str):
         msg += f"   • ATR: ${atr:.4f} ({atr_pct:.2f}%)\n"
         msg += "\n"
         
-        msg += "📋 **الأسباب:**\n"
-        if reasons and len(reasons) > 0 and reasons[0] != "لا توجد أسباب محددة":
-            for reason in reasons[:4]:
-                msg += f"   • {reason}\n"
+        # ── عرض تحليل النموذج مباشرة ──
+        if model_analysis:
+            msg += "🧠 **تحليل Tona AI:**\n"
+            msg += f"{model_analysis}\n"
         else:
-            if rsi > 70:
-                msg += f"   • RSI في منطقة ذروة شراء ({rsi:.1f})\n"
-            elif rsi < 30:
-                msg += f"   • RSI في منطقة ذروة بيع ({rsi:.1f})\n"
-            else:
-                msg += f"   • RSI محايد ({rsi:.1f})\n"
-            
-            if adx > 25:
-                msg += f"   • ADX يشير إلى اتجاه قوي ({adx:.1f})\n"
-            else:
-                msg += f"   • ADX ضعيف ({adx:.1f}) - سوق عرضي\n"
-            
+            msg += "⚠️ **تعذر الحصول على تحليل من النموذج** (تم استخدام التحليل الاحتياطي).\n"
+            # تحليل احتياطي بسيط
             bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
             bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
             if bullish >= 3:
-                msg += f"   • {bullish}/4 فريمات صاعدة - اتجاه صاعد قوي\n"
-            elif bearish >= 3:
-                msg += f"   • {bearish}/4 فريمات هابطة - اتجاه هابط قوي\n"
-            else:
-                msg += f"   • {bullish} صاعدة / {bearish} هابطة - سوق متذبذب\n"
-        
-        # ── النصيحة ──
-        if advice and advice != "لا توجد نصيحة محددة":
-            msg += f"\n💡 **نصيحة Tona AI:**\n{advice}\n"
-        else:
-            msg += "\n💡 **نصيحة Tona AI:**\n"
-            bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
-            bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
-            if bullish >= 3 and rsi < 70:
                 msg += "الاتجاه العام صاعد، يمكن النظر في صفقات شراء مع إدارة المخاطر.\n"
-            elif bearish >= 3 and rsi > 30:
+            elif bearish >= 3:
                 msg += "الاتجاه العام هابط، يمكن النظر في صفقات بيع أو الانتظار.\n"
             else:
                 msg += "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة.\n"
-        
-        # ── عرض رد النموذج الخام (إذا وُجد) ──
-        if raw_response:
-            raw_preview = raw_response[:400] + "..." if len(raw_response) > 400 else raw_response
-            msg += f"\n🧠 **رد النموذج الخام:**\n{raw_preview}\n"
-        else:
-            msg += "\n⚠️ **لم يتم الحصول على رد من النموذج** (تم استخدام التحليل الاحتياطي).\n"
         
         # ── الصفقة المفتوحة ──
         if open_trade:
@@ -1780,8 +1650,8 @@ def handle_analysis(asset_type: str, chat_id: str):
         queue_telegram_message(f"⚠️ حدث خطأ أثناء التحليل: {str(e)[:100]}", chat_id)
 
 
-# ── باقي الدوال (handle_position_status, handle_manual_open, handle_performance_report, handle_learning_report, handle_intelligence_report, close_trade_manual, handle_message) تبقى كما هي في نسختك ──
-def handle_position_status(chat_id: str):
+# ── باقي الدوال (handle_position_status, handle_manual_open, handle_performance_report, handle_learning_report, handle_intelligence_report, close_trade_manual, handle_message) تبقى كما هي ──
+    def handle_position_status(chat_id: str):
     """عرض وضع الصفقات المفتوحة"""
     try:
         msg = "📊 **وضع الصفقات الحالية**\n"
