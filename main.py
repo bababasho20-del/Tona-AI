@@ -422,7 +422,7 @@ def generate_raw_signal(asset_type: str) -> Dict:
 
 
 # ====================================================================================
-# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - الكاملة
+# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - المطابقة لنسختك مع إضافة raw_response
 # ====================================================================================
 
 class AICore:
@@ -430,7 +430,7 @@ class AICore:
     
     def __init__(self):
         self.gemini_model = None
-        self.groq_model = "openai/gpt-oss-120b"
+        self.groq_model = "openai/gpt-oss-120b"  # ✅ كما هو في نسختك، لم أغير شيئاً
         
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
@@ -471,7 +471,7 @@ class AICore:
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": self.groq_model,
+                "model": self.groq_model,  # ✅ openai/gpt-oss-120b كما في نسختك
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens": max_tokens,
@@ -498,7 +498,7 @@ class AICore:
         return None
     
     def analyze_market(self, asset: str, data: Dict, open_trade: Optional[Dict] = None) -> Dict:
-        """تحليل شامل للسوق - مع منطق احتياطي قوي"""
+        """تحليل شامل للسوق - مع إضافة raw_response للتشخيص"""
         closes = data.get("closes", [])
         if not closes:
             return {"error": "لا توجد بيانات"}
@@ -596,7 +596,8 @@ MACD: {macd:.4f}
             "score": manual_score,
             "reasons": [],
             "advice": "",
-            "risk_level": 1
+            "risk_level": 1,
+            "raw_response": response  # <--- إضافة الرد الخام للتشخيص
         }
         
         if response:
@@ -1449,7 +1450,7 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 
 
 # ====================================================================================
-# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - الكاملة
+# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة (مع عرض raw_response)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -1639,7 +1640,7 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
 
 
 def handle_analysis(asset_type: str, chat_id: str):
-    """معالجة طلب التحليل الشامل"""
+    """معالجة طلب التحليل الشامل – مع عرض رد النموذج الخام"""
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     
     try:
@@ -1671,6 +1672,8 @@ def handle_analysis(asset_type: str, chat_id: str):
         timeframes_trends = analyze_timeframes(asset_type)
         
         open_trade = get_current_open_trade(asset_type)
+        
+        # استدعاء تحليل الذكاء الاصطناعي (سيحتوي على raw_response)
         ai_analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
         
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
@@ -1680,11 +1683,13 @@ def handle_analysis(asset_type: str, chat_id: str):
         risk_level = ai_analysis.get('risk_level', 1)
         reasons = ai_analysis.get('reasons', [])
         advice = ai_analysis.get('advice', '')
+        raw_response = ai_analysis.get('raw_response', '')
         
         if score < 10:
             score = 50
             evaluation = "متوسط"
         
+        # ── بناء التقرير ──
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg += f"💰 **السعر الحالي:** ${safe_price(price)}\n"
@@ -1733,6 +1738,7 @@ def handle_analysis(asset_type: str, chat_id: str):
             else:
                 msg += f"   • {bullish} صاعدة / {bearish} هابطة - سوق متذبذب\n"
         
+        # ── النصيحة ──
         if advice and advice != "لا توجد نصيحة محددة":
             msg += f"\n💡 **نصيحة Tona AI:**\n{advice}\n"
         else:
@@ -1746,6 +1752,14 @@ def handle_analysis(asset_type: str, chat_id: str):
             else:
                 msg += "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة.\n"
         
+        # ── عرض رد النموذج الخام (إذا وُجد) ──
+        if raw_response:
+            raw_preview = raw_response[:400] + "..." if len(raw_response) > 400 else raw_response
+            msg += f"\n🧠 **رد النموذج الخام:**\n{raw_preview}\n"
+        else:
+            msg += "\n⚠️ **لم يتم الحصول على رد من النموذج** (تم استخدام التحليل الاحتياطي).\n"
+        
+        # ── الصفقة المفتوحة ──
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
@@ -1766,6 +1780,7 @@ def handle_analysis(asset_type: str, chat_id: str):
         queue_telegram_message(f"⚠️ حدث خطأ أثناء التحليل: {str(e)[:100]}", chat_id)
 
 
+# ── باقي الدوال (handle_position_status, handle_manual_open, handle_performance_report, handle_learning_report, handle_intelligence_report, close_trade_manual, handle_message) تبقى كما هي في نسختك ──
 def handle_position_status(chat_id: str):
     """عرض وضع الصفقات المفتوحة"""
     try:
