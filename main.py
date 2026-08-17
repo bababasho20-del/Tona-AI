@@ -1421,7 +1421,7 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 
 
 # ====================================================================================
-# 📦 PART 09: بوابة المستخدم (Flask + Telegram)
+# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة
 # ====================================================================================
 
 app = Flask(__name__)
@@ -1463,7 +1463,7 @@ def queue_telegram_message(text: str, chat_id: str = None):
         return False
     target = chat_id or CHAT_ID
     if not target:
-        logger.error("❌ لا يوجد chat_id")
+        logger.error("❌ queue_telegram_message: لا يوجد chat_id")
         return False
     TELEGRAM_QUEUE.put({"text": text, "chat_id": target})
     return True
@@ -1547,49 +1547,114 @@ def send_main_menu(chat_id: str):
         logger.error(f"❌ فشل إرسال القائمة: {e}")
 
 
+def analyze_timeframes(asset_type: str) -> Dict[str, str]:
+    """تحليل الفريمات الأربعة (5m, 15m, 1h, 4h) باستخدام SuperTrend"""
+    result = {}
+    symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+    st_mult = 2.5 if asset_type == "oil" else 2.2
+    
+    timeframes = {
+        "5m": "Min5",
+        "15m": "Min15",
+        "1h": "Min60",
+        "4h": "Hour4"
+    }
+    
+    for name, interval in timeframes.items():
+        data = get_mexc_candles(symbol, interval, 100)
+        if data and data.get("closes"):
+            st_result = calculate_supertrend_vpt_correct(data, st_mult=st_mult, st_period=100, vpt_len=10)
+            if st_result:
+                _, trend, _ = st_result
+                trend_text = "صاعد 📈" if trend[-1] == 1 else "هابط 📉" if trend[-1] == -1 else "محايد ⚪"
+                result[name] = trend_text
+            else:
+                result[name] = "غير متوفر"
+        else:
+            result[name] = "غير متوفر"
+    
+    return result
+
+
 def handle_analysis(asset_type: str, chat_id: str):
-    """معالجة طلب التحليل الشامل"""
+    """معالجة طلب التحليل الشامل مع عرض الفريمات الأربعة"""
+    logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
+    
     try:
+        queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
+    except Exception as e:
+        logger.error(f"❌ [handle_analysis] فشل إرسال رسالة 'جاري التحليل': {e}")
+    
+    try:
+        # ── 1. جلب البيانات الرئيسية (15 دقيقة) ──
         symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
         data = get_mexc_candles(symbol, "Min15", 200)
         if not data:
-            queue_telegram_message(f"⚠️ تعذر جلب بيانات {asset_type}", chat_id)
+            logger.error(f"❌ [handle_analysis] فشل جلب بيانات {asset_type}")
+            queue_telegram_message(f"⚠️ تعذر جلب بيانات {'النفط' if asset_type == 'oil' else 'الفضة'}", chat_id)
             return
         
+        logger.info(f"✅ [handle_analysis] تم جلب بيانات {asset_type} (عدد الشموع: {len(data.get('closes', []))})")
+        
+        # ── 2. تحليل الفريمات الأربعة ──
+        timeframes_trends = analyze_timeframes(asset_type)
+        logger.info(f"✅ [handle_analysis] تحليل الفريمات: {timeframes_trends}")
+        
+        # ── 3. الحصول على التحليل من AI ──
         open_trade = get_current_open_trade(asset_type)
         analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
         
         if analysis.get("error"):
+            logger.error(f"❌ [handle_analysis] خطأ من AI: {analysis['error']}")
             queue_telegram_message(f"⚠️ {analysis['error']}", chat_id)
             return
         
+        # ── 4. بناء الرسالة النهائية ──
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
         price = data["closes"][-1]
         
-        msg = f"📊 **تحليل {asset_label}**\n"
-        msg += "━" * 30 + "\n"
-        msg += f"💰 السعر الحالي: ${safe_price(price)}\n"
-        msg += f"📈 التقييم: {analysis.get('evaluation', 'متوسط')}\n"
-        msg += f"📊 الدرجة: {analysis.get('score', 50)}/100\n"
-        msg += f"⚠️ مستوى الخطر: {analysis.get('risk_level', 1)}/3\n\n"
+        msg = f"📊 **تحليل {asset_label} الشامل**\n"
+        msg += "━" * 35 + "\n"
+        msg += f"💰 **السعر الحالي:** ${safe_price(price)}\n"
+        msg += f"📈 **التقييم:** {analysis.get('evaluation', 'متوسط')}\n"
+        msg += f"📊 **الدرجة:** {analysis.get('score', 50)}/100\n"
+        msg += f"⚠️ **مستوى الخطر:** {analysis.get('risk_level', 1)}/3\n"
+        msg += "━" * 35 + "\n\n"
         
+        # ── 5. عرض تحليل الفريمات الأربعة ──
+        msg += "🕐 **تحليل الفريمات الزمنية:**\n"
+        msg += f"   • 5 دقائق: {timeframes_trends.get('5m', 'غير متوفر')}\n"
+        msg += f"   • 15 دقيقة: {timeframes_trends.get('15m', 'غير متوفر')}\n"
+        msg += f"   • ساعة: {timeframes_trends.get('1h', 'غير متوفر')}\n"
+        msg += f"   • 4 ساعات: {timeframes_trends.get('4h', 'غير متوفر')}\n"
+        msg += "\n"
+        
+        # ── 6. عرض الأسباب والنصيحة ──
         msg += "📋 **الأسباب:**\n"
         for reason in analysis.get('reasons', ['لا توجد أسباب']):
             msg += f"   • {reason}\n"
         
         msg += f"\n💡 **نصيحة Tona AI:**\n{analysis.get('advice', 'لا توجد نصيحة')}\n"
         
+        # ── 7. معلومات الصفقة المفتوحة إن وجدت ──
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
             profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
             msg += f"\n📈 **الصفقة المفتوحة:** {trade_type} @ ${safe_price(entry)} | {profit_pct:+.2f}%"
+            msg += f"\n🛡️ وقف الخسارة: ${safe_price(open_trade.get('sl'))}"
+            msg += f"\n🎯 الهدف: ${safe_price(open_trade.get('tp'))}"
         
         msg += "\n\n💙 Tona AI: أنا هنا لمساعدتك!"
+        
+        logger.info(f"✅ [handle_analysis] تم بناء الرسالة لـ {asset_type} (طول: {len(msg)})")
         queue_telegram_message(msg, chat_id)
+        logger.info(f"✅ [handle_analysis] تم إرسال التحليل لـ {asset_type}")
         
     except Exception as e:
-        logger.error(f"❌ فشل تحليل {asset_type}: {e}")
+        logger.error(f"❌ [handle_analysis] استثناء: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         queue_telegram_message(f"⚠️ حدث خطأ أثناء التحليل: {str(e)[:100]}", chat_id)
 
 
@@ -1866,22 +1931,38 @@ def close_trade_manual(asset_type: Optional[str], chat_id: str):
 def handle_message(text: str, chat_id: str):
     """معالجة الرسائل الواردة"""
     clean_text = text.strip()
-    logger.info(f"📩 رسالة من {chat_id}: {clean_text[:50]}...")
+    logger.info(f"📩 [handle_message] رسالة من {chat_id}: '{clean_text}'")
     
+    # ── الأوامر الأساسية ──
     if clean_text in ["/start", "قائمة", "منيو", "/menu"]:
         send_main_menu(chat_id)
         return
     
+    # ── تحليل النفط (بدون خيط) ──
     if clean_text in ["🛢️ تحليل النفط", "نفط", "oil"]:
-        queue_telegram_message("🔍 جاري التحليل الشامل للنفط...", chat_id)
-        threading.Thread(target=handle_analysis, args=("oil", chat_id), daemon=True).start()
+        logger.info("🔍 [handle_message] بدء تحليل النفط مباشرة (بدون خيط)")
+        try:
+            handle_analysis("oil", chat_id)
+        except Exception as e:
+            logger.error(f"❌ [handle_message] فشل تحليل النفط: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            queue_telegram_message(f"⚠️ حدث خطأ في تحليل النفط: {str(e)[:100]}", chat_id)
         return
     
+    # ── تحليل الفضة (بدون خيط) ──
     if clean_text in ["🥈 تحليل الفضة", "فضة", "silver"]:
-        queue_telegram_message("🔍 جاري التحليل الشامل للفضة...", chat_id)
-        threading.Thread(target=handle_analysis, args=("silver", chat_id), daemon=True).start()
+        logger.info("🔍 [handle_message] بدء تحليل الفضة مباشرة (بدون خيط)")
+        try:
+            handle_analysis("silver", chat_id)
+        except Exception as e:
+            logger.error(f"❌ [handle_message] فشل تحليل الفضة: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            queue_telegram_message(f"⚠️ حدث خطأ في تحليل الفضة: {str(e)[:100]}", chat_id)
         return
     
+    # ── باقي الأوامر ──
     if clean_text in ["🔍 وضع الصفقة الحالية", "وضع الصفقة", "حالة"]:
         threading.Thread(target=handle_position_status, args=(chat_id,), daemon=True).start()
         return
@@ -1917,7 +1998,9 @@ def handle_message(text: str, chat_id: str):
     if clean_text.startswith("فتح صفقة"):
         threading.Thread(target=handle_manual_open_command, args=(clean_text, chat_id), daemon=True).start()
         return
-
+    
+    # ── أي رسالة أخرى ──
+    queue_telegram_message(f"💙 Tona AI: أمر غير معروف. استخدم الأزرار أو اكتب /start للقائمة.", chat_id)
 
 # ====================================================================================
 # 📦 PART 10: ماسح الإشارات (Scanner)
