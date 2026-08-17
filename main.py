@@ -2110,21 +2110,43 @@ def run_flask():
 def set_webhook() -> bool:
     """تسجيل Webhook في Telegram"""
     if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود")
         return False
+    
     render_url = os.environ.get('RENDER_EXTERNAL_URL', '')
     if not render_url:
         service_name = os.environ.get('RENDER_SERVICE_NAME', '')
         render_url = f"https://{service_name}.onrender.com" if service_name else os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
         if render_url:
             render_url = f"https://{render_url}"
+    
     if not render_url:
+        logger.error("❌ RENDER_EXTERNAL_URL غير موجود - لا يمكن تسجيل Webhook")
         return False
+    
     webhook_url = f"{render_url}/webhook"
+    logger.info(f"🔗 محاولة تسجيل Webhook: {webhook_url}")
+    
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-        resp = requests.post(url, json={"url": webhook_url, "allowed_updates": ["message"]}, timeout=10)
-        return resp.status_code == 200 and resp.json().get('ok', False)
-    except:
+        resp = requests.post(url, json={
+            "url": webhook_url,
+            "allowed_updates": ["message"]
+        }, timeout=10)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('ok', False):
+                logger.info(f"✅ Webhook مسجل بنجاح: {webhook_url}")
+                return True
+            else:
+                logger.error(f"❌ فشل تسجيل Webhook: {data}")
+                return False
+        else:
+            logger.error(f"❌ خطأ في تسجيل Webhook: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ استثناء في تسجيل Webhook: {e}")
         return False
 
 
@@ -2141,34 +2163,77 @@ if __name__ == "__main__":
     logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
     logger.info("=" * 60)
     
-    # تنظيف الصفقات العالقة
+    # ── التحقق من المتغيرات البيئية الأساسية ──
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود في المتغيرات البيئية!")
+    else:
+        logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
+    
+    if not CHAT_ID:
+        logger.error("❌ CHAT_ID غير موجود في المتغيرات البيئية!")
+    else:
+        logger.info(f"✅ CHAT_ID: {CHAT_ID}")
+    
+    if not GROQ_API_KEY:
+        logger.warning("⚠️ GROQ_API_KEY غير موجود (سيتم استخدام Gemini فقط)")
+    else:
+        logger.info("✅ GROQ_API_KEY موجود")
+    
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود (سيتم استخدام Groq فقط)")
+    else:
+        logger.info("✅ GEMINI_API_KEY موجود")
+    
+    # ── إنشاء المجلدات ──
+    os.makedirs("learning_data", exist_ok=True)
+    os.makedirs("learning_data/backups", exist_ok=True)
+    
+    # ── تنظيف الصفقات العالقة ──
     cleanup_stuck_trades(TRADING_CORE)
     
-    # تسجيل Webhook
+    # ── تسجيل Webhook ──
     if set_webhook():
         logger.info("✅ Webhook مسجل بنجاح")
     else:
-        logger.warning("⚠️ فشل تسجيل Webhook")
+        logger.warning("⚠️ فشل تسجيل Webhook - سيتم استقبال الرسائل عبر polling (غير مدعوم)")
     
-    # تشغيل Flask في خيط منفصل
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    # ── تشغيل Telegram Sender (يجب أن يكون أولاً) ──
+    sender_thread = threading.Thread(target=telegram_sender, name="Sender", daemon=True)
+    sender_thread.start()
+    logger.info("✅ Thread Sender بدأ - جاهز لإرسال الرسائل")
+    
+    # ── تشغيل Flask في خيط منفصل ──
+    flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
     flask_thread.start()
-    logger.info("🌐 خادم Flask يعمل")
+    logger.info("🌐 خادم Flask يعمل على المنفذ " + os.environ.get('PORT', '10000'))
     
-    # تشغيل الخيوط
-    threads = [
-        threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True),
-        threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True),
-        threading.Thread(target=telegram_sender, name="Sender", daemon=True),
-    ]
+    # ── تشغيل الماسح (Scanner) ──
+    scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+    scanner_thread.start()
+    logger.info("✅ Thread Scanner بدأ")
     
-    for t in threads:
-        t.start()
-        logger.info(f"✅ Thread {t.name} بدأ")
+    # ── تشغيل المراقبة (Monitor) ──
+    monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+    monitor_thread.start()
+    logger.info("✅ Thread Monitor بدأ")
+    
+    # ── انتظار حتى يستقر Sender وإرسال رسالة تأكيد ──
+    time.sleep(3)
+    if CHAT_ID:
+        try:
+            queue_telegram_message(
+                "🚀 **Tona AI V2.0** جاهز للعمل!\n\n"
+                "💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n"
+                "📌 استخدم الأزرار أو اكتب /start للقائمة.",
+                CHAT_ID
+            )
+            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
+        except Exception as e:
+            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
     
     logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
     logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
     
-    # الحلقة الرئيسية
+    # ── الحلقة الرئيسية ──
     while True:
         time.sleep(1)
