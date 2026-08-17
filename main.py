@@ -422,37 +422,33 @@ def generate_raw_signal(asset_type: str) -> Dict:
 
 
 # ====================================================================================
-# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core)
+# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - الكاملة
 # ====================================================================================
 
 class AICore:
-    """المحرك الذكي للبوت - جميع الاستدعاءات للنماذج تمر من هنا"""
+    """المحرك الذكي للبوت - مع منطق احتياطي قوي"""
     
     def __init__(self):
         self.gemini_model = None
         self.groq_model = "openai/gpt-oss-120b"
         
-        # تهيئة Gemini مع تسجيل تفصيلي
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
-                logger.info(f"🔑 محاولة تهيئة Gemini بالمفتاح: {GEMINI_API_KEY[:10]}...")
                 genai.configure(api_key=GEMINI_API_KEY)
                 self.gemini_model = genai.GenerativeModel('gemini-3.5-flash')
                 logger.info("✅ Gemini 3.5 Flash جاهز")
             except Exception as e:
                 logger.error(f"❌ فشل تهيئة Gemini: {e}")
         else:
-            logger.warning(f"⚠️ Gemini غير متوفر - GEMINI_AVAILABLE={GEMINI_AVAILABLE}, GEMINI_API_KEY={'موجود' if GEMINI_API_KEY else 'مفقود'}")
+            logger.warning("⚠️ Gemini غير متوفر")
         
         if GROQ_API_KEY:
-            logger.info("✅ Groq API جاهز (نموذج: openai/gpt-oss-120b)")
+            logger.info("✅ Groq API جاهز")
         else:
             logger.warning("⚠️ Groq API غير متوفر")
     
     def _call_gemini(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """استدعاء Gemini مع تسجيل الأخطاء"""
         if not self.gemini_model:
-            logger.warning("⚠️ Gemini غير مهيأ")
             return None
         try:
             response = self.gemini_model.generate_content(
@@ -461,17 +457,12 @@ class AICore:
             )
             if response and response.text:
                 return response.text.strip()
-            else:
-                logger.warning("⚠️ رد Gemini فارغ")
-                return None
         except Exception as e:
             logger.error(f"❌ Gemini فشل: {e}")
-            return None
+        return None
     
     def _call_groq(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """استدعاء Groq - مطابق للبوت القديم"""
         if not GROQ_API_KEY:
-            logger.warning("⚠️ Groq API Key مفقود")
             return None
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -479,32 +470,24 @@ class AICore:
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
             }
-            messages = [{"role": "user", "content": prompt}]
             payload = {
                 "model": self.groq_model,
-                "messages": messages,
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens": max_tokens,
                 "top_p": 0.9
             }
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
                 content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
                 if content:
                     return content.strip()
-                else:
-                    logger.warning("⚠️ رد Groq فارغ")
-                    return None
-            else:
-                logger.error(f"❌ Groq خطأ {response.status_code}: {response.text[:200]}")
-                return None
         except Exception as e:
-            logger.error(f"❌ Groq استثناء: {e}")
-            return None
+            logger.error(f"❌ Groq فشل: {e}")
+        return None
     
     def _call_model(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """استدعاء Gemini أولاً، فإن فشل يستخدم Groq"""
         response = self._call_gemini(prompt, max_tokens)
         if response:
             return response
@@ -515,114 +498,159 @@ class AICore:
         return None
     
     def analyze_market(self, asset: str, data: Dict, open_trade: Optional[Dict] = None) -> Dict:
-        """تحليل شامل للسوق"""
+        """تحليل شامل للسوق - مع منطق احتياطي قوي"""
         closes = data.get("closes", [])
         if not closes:
             return {"error": "لا توجد بيانات"}
+        
         price = closes[-1]
         
-        rsi = calculate_rsi_7(closes)
-        rsi_val = rsi[-1] if rsi else 50
-        macd_line, sig_line, hist = calculate_macd_full(closes)
-        macd_val = hist[-1] if hist else 0
-        atr = calculate_atr_14(data)
+        rsi_values = calculate_rsi_7(closes)
+        rsi = rsi_values[-1] if rsi_values else 50
+        
+        macd_line, signal_line, hist = calculate_macd_full(closes)
+        macd = hist[-1] if hist else 0
+        
+        adx = calculate_adx_14(data) or 20
         
         timeframes = {}
         for tf, interval in [("5m", "Min5"), ("15m", "Min15"), ("1h", "Min60"), ("4h", "Hour4")]:
-            tf_data = get_mexc_candles("USOIL_USDT" if asset == "oil" else "SILVER_USDT", interval, 50)
+            tf_data = get_mexc_candles("USOIL_USDT" if asset == "oil" else "SILVER_USDT", interval, 100)
             if tf_data and tf_data.get("closes"):
-                result = calculate_supertrend_vpt_correct(tf_data, st_mult=2.5 if asset == "oil" else 2.2)
-                if result:
-                    _, trend, _ = result
+                st_result = calculate_supertrend_vpt_correct(tf_data, st_mult=2.5 if asset == "oil" else 2.2)
+                if st_result:
+                    _, trend, _ = st_result
                     timeframes[tf] = "صاعد" if trend[-1] == 1 else "هابط" if trend[-1] == -1 else "محايد"
+                else:
+                    tf_closes = tf_data["closes"]
+                    if len(tf_closes) >= 20:
+                        sma_short = sum(tf_closes[-5:]) / 5
+                        sma_long = sum(tf_closes[-20:]) / 20
+                        if sma_short > sma_long * 1.003:
+                            timeframes[tf] = "صاعد"
+                        elif sma_short < sma_long * 0.997:
+                            timeframes[tf] = "هابط"
+                        else:
+                            timeframes[tf] = "محايد"
+                    else:
+                        timeframes[tf] = "محايد"
+            else:
+                timeframes[tf] = "محايد"
         
-        prompt = f"""أنت خبير تداول محترف في النفط والفضة. قم بتحليل شامل للأصل التالي وأجب بالصيغة المطلوبة فقط.
+        bullish_count = sum(1 for t in timeframes.values() if t == "صاعد")
+        bearish_count = sum(1 for t in timeframes.values() if t == "هابط")
+        total_frames = len(timeframes)
+        
+        manual_score = 50
+        if rsi > 70:
+            manual_score -= 10
+        elif rsi < 30:
+            manual_score += 10
+        
+        if adx > 25:
+            manual_score += 10
+        elif adx < 20:
+            manual_score -= 10
+        
+        if bullish_count >= 3:
+            manual_score += 10
+        elif bearish_count >= 3:
+            manual_score -= 10
+        
+        manual_score = max(0, min(100, manual_score))
+        
+        if manual_score >= 65:
+            manual_eval = "جيد"
+        elif manual_score >= 45:
+            manual_eval = "متوسط"
+        else:
+            manual_eval = "ضعيف"
+        
+        prompt = f"""حلل السوق التالي وأجب بالصيغة المطلوبة فقط.
 
-═══════════════════════════════════════
-📊 بيانات السوق:
-═══════════════════════════════════════
-• الأصل: {asset}
-• السعر الحالي: ${price:.2f}
-• RSI (7): {rsi_val:.1f}
-• MACD Histogram: {macd_val:.4f}
-• ATR (14): {atr:.4f} ({(atr/price*100) if price > 0 else 0:.2f}%)
+السعر: ${price:.2f}
+RSI: {rsi:.1f}
+ADX: {adx:.1f}
+MACD: {macd:.4f}
+الفريمات الصاعدة: {bullish_count}/{total_frames}
+الفريمات الهابطة: {bearish_count}/{total_frames}
 
-🕐 تحليل الفريمات:
+المطلوب:
+التقييم: [ممتاز/جيد/متوسط/ضعيف/سيئ]
+الدرجة: [0-100]
+الأسباب: [3 أسباب على الأقل]
+نصيحة: [نصيحة مختصرة]
+مستوى الخطر: [1/2/3]
 """
-        for tf, trend in timeframes.items():
-            prompt += f"   • {tf}: {trend}\n"
         
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
-            if entry > 0:
-                profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
-            else:
-                profit_pct = 0
-            prompt += f"""
-═══════════════════════════════════════
-📈 الصفقة المفتوحة:
-═══════════════════════════════════════
-• النوع: {trade_type}
-• سعر الدخول: ${entry:.2f}
-• الربح/الخسارة الحالية: {profit_pct:+.2f}%
-• وقف الخسارة: ${open_trade.get('sl', 0):.2f}
-• الهدف: ${open_trade.get('tp', 0):.2f}
-"""
-        
-        prompt += """
-═══════════════════════════════════════
-المطلوب (أجب بالصيغة التالية فقط):
-═══════════════════════════════════════
-التقييم: [قوي/متوسط/ضعيف]
-الدرجة: [0-100]
-الأسباب: [سبب1، سبب2، سبب3]
-نصيحة: [نصيحة مختصرة للمستخدم]
-مستوى الخطر: [1/2/3]  (1=آمن، 2=مراقبة، 3=خطر داهم)
-
-ملاحظة: إذا كانت هناك صفقة مفتوحة، اذكر في النصيحة ما إذا كان ينصح بالاستمرار أم الإغلاق.
-"""
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+            prompt += f"\nالصفقة المفتوحة: {trade_type} | {profit_pct:+.2f}%"
         
         response = self._call_model(prompt, max_tokens=400)
-        if not response:
-            return {"error": "تعذر الحصول على تحليل من النموذج"}
         
         result = {
-            "evaluation": "متوسط",
-            "score": 50,
+            "evaluation": manual_eval,
+            "score": manual_score,
             "reasons": [],
-            "advice": "لا توجد نصيحة",
-            "risk_level": 1,
-            "raw_response": response
+            "advice": "",
+            "risk_level": 1
         }
         
-        eval_match = re.search(r'التقييم:\s*(.+)', response)
-        if eval_match:
-            result["evaluation"] = eval_match.group(1).strip()
+        if response:
+            eval_match = re.search(r'التقييم:\s*(.+)', response)
+            if eval_match:
+                result["evaluation"] = eval_match.group(1).strip()
+            
+            score_match = re.search(r'الدرجة:\s*(\d+)', response)
+            if score_match:
+                try:
+                    result["score"] = min(100, max(0, int(score_match.group(1))))
+                except:
+                    pass
+            
+            reasons_match = re.search(r'الأسباب:\s*(.+)', response, re.DOTALL)
+            if reasons_match:
+                reasons_text = reasons_match.group(1).strip()
+                reasons = [r.strip() for r in re.split(r'[،،,]', reasons_text) if r.strip()]
+                if reasons:
+                    result["reasons"] = reasons[:5]
+            
+            advice_match = re.search(r'نصيحة:\s*(.+)', response)
+            if advice_match:
+                result["advice"] = advice_match.group(1).strip()
+            
+            risk_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
+            if risk_match:
+                try:
+                    result["risk_level"] = min(3, max(1, int(risk_match.group(1))))
+                except:
+                    pass
         
-        score_match = re.search(r'الدرجة:\s*(\d+)', response)
-        if score_match:
-            try:
-                result["score"] = int(score_match.group(1))
-            except ValueError:
-                pass
+        if result["score"] < 10 or result["score"] > 100:
+            result["score"] = manual_score
+            result["evaluation"] = manual_eval
         
-        reasons_match = re.search(r'الأسباب:\s*(.+)', response)
-        if reasons_match:
-            reasons_text = reasons_match.group(1).strip()
-            result["reasons"] = [r.strip() for r in reasons_text.split('،') if r.strip()]
+        if not result["reasons"]:
+            result["reasons"] = [
+                f"السعر الحالي: ${price:.2f}",
+                f"RSI: {rsi:.1f} ({'مرتفع' if rsi > 70 else 'منخفض' if rsi < 30 else 'محايد'})",
+                f"ADX: {adx:.1f} ({'قوي' if adx > 25 else 'ضعيف'})",
+                f"{bullish_count}/{total_frames} فريمات صاعدة",
+                f"{bearish_count}/{total_frames} فريمات هابطة"
+            ]
         
-        advice_match = re.search(r'نصيحة:\s*(.+)', response)
-        if advice_match:
-            result["advice"] = advice_match.group(1).strip()
+        if not result["advice"]:
+            if bullish_count >= 3:
+                result["advice"] = "الاتجاه العام صاعد، فكر في صفقات شراء مع إدارة المخاطر."
+            elif bearish_count >= 3:
+                result["advice"] = "الاتجاه العام هابط، فكر في صفقات بيع أو الانتظار."
+            else:
+                result["advice"] = "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة."
         
-        risk_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
-        if risk_match:
-            try:
-                result["risk_level"] = min(3, max(1, int(risk_match.group(1))))
-            except ValueError:
-                pass
-        
+        logger.info(f"✅ تحليل {asset}: score={result['score']}, risk={result['risk_level']}")
         return result
     
     def generate_alert(self, asset: str, open_trade: Dict, current_data: Dict) -> Dict:
@@ -863,7 +891,7 @@ class AICore:
         if response:
             return response
         return "تعذر توليد التقرير الاستخباراتي"
-
+        
 
 # ====================================================================================
 # 📦 PART 05: نظام التعلم العميق (إدارة السيناريوهات وشخصية السوق والدروس)
@@ -1421,13 +1449,12 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 
 
 # ====================================================================================
-# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة بالكامل
+# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - الكاملة
 # ====================================================================================
 
 app = Flask(__name__)
 CORS(app)
 
-# ── قفل لمنع تداخل إرسال الرسائل ──
 TELEGRAM_SEND_LOCK = threading.Lock()
 
 
@@ -1461,10 +1488,7 @@ def webhook():
 
 
 def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
-    """
-    إرسال رسالة مباشرة إلى Telegram (بدون طابور)
-    تُستخدم لحل مشكلة عدم وصول الرسائل
-    """
+    """إرسال رسالة مباشرة إلى Telegram"""
     if not TELEGRAM_TOKEN:
         logger.error("❌ TELEGRAM_TOKEN غير موجود")
         return False
@@ -1473,10 +1497,7 @@ def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
         logger.error("❌ chat_id غير موجود")
         return False
     
-    # حماية من الإرسال المتزامن
     with TELEGRAM_SEND_LOCK:
-        logger.info(f"📤 إرسال مباشر: (طول: {len(text)}) إلى {chat_id}")
-        
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         try:
             resp = requests.post(url, json={
@@ -1485,12 +1506,10 @@ def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True
             }, timeout=15)
-            
             if resp.status_code == 200:
-                logger.info(f"✅ تم الإرسال بنجاح إلى {chat_id}")
                 return True
             else:
-                logger.error(f"❌ فشل الإرسال (status {resp.status_code}): {resp.text[:200]}")
+                logger.error(f"❌ فشل الإرسال: {resp.status_code}")
                 return False
         except Exception as e:
             logger.error(f"❌ استثناء في الإرسال: {e}")
@@ -1498,31 +1517,19 @@ def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
 
 
 def queue_telegram_message(text: str, chat_id: str = None):
-    """
-    إضافة رسالة إلى الطابور مع إرسال مباشر (لحل مشكلة عدم الوصول)
-    """
+    """إرسال رسالة مباشرة"""
     if not text or text.strip() == "":
-        logger.warning("⚠️ نص فارغ، تم التخطي")
         return False
-    
     target = chat_id or CHAT_ID
     if not target:
-        logger.error("❌ لا يوجد chat_id")
         return False
-    
-    # ── التحقق من طول النص (Telegram يسمح بـ 4096 حرف) ──
     if len(text) > 4096:
-        logger.warning(f"⚠️ النص طويل جداً ({len(text)})، سيتم تقسيمه")
-        # تقسيم النص إلى أجزاء
         parts = []
         for i in range(0, len(text), 4000):
             parts.append(text[i:i+4000])
-        
         for part in parts:
             _send_telegram_message_direct(part, target)
         return True
-    
-    # ── إرسال مباشر ──
     return _send_telegram_message_direct(text, target)
 
 
@@ -1547,47 +1554,29 @@ def send_main_menu(chat_id: str):
             keyboard.append(close_row)
     
     reply_markup = {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
-    
     text = """🚀 **Tona AI V2.0** - المستشار الذكي
 
 💙 أنا هنا لمساعدتك في تحليل النفط والفضة.
 
-📌 **الأزرار:**
-• تحليل النفط/الفضة - تحليل شامل مع توصية
-• وضع الصفقة الحالية - متابعة الصفقات المفتوحة
-• فتح صفقة يدوياً - افتح صفقة بنفسك
-• تقرير الأداء - إحصائيات الصفقات
-• تقرير التعلم العميق - الدروس المستفادة
-• تقرير استخباراتي - تحليل متقدم للسوق
-• إغلاق الصفقة - إغلاق يدوي
-
-🧠 نظام التعلم العميق يعمل في الخلفية.
-💙 Tona AI: أنا هنا لخدمتك!"""
-    
-    # إرسال القائمة مباشرة
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN غير موجود")
-        return
+📌 استخدم الأزرار أو اكتب /start للقائمة."""
     
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        resp = requests.post(url, json={
+        requests.post(url, json={
             "chat_id": chat_id,
             "text": text,
             "reply_markup": reply_markup,
             "parse_mode": "HTML"
         }, timeout=10)
-        
-        if resp.status_code == 200:
-            logger.info(f"✅ تم إرسال القائمة لـ {chat_id}")
-        else:
-            logger.error(f"❌ فشل إرسال القائمة: {resp.status_code} - {resp.text[:200]}")
     except Exception as e:
         logger.error(f"❌ فشل إرسال القائمة: {e}")
 
 
 def analyze_timeframes(asset_type: str) -> Dict[str, str]:
-    """تحليل الفريمات الأربعة (5m, 15m, 1h, 4h) باستخدام SuperTrend"""
+    """
+    تحليل الفريمات الأربعة (5m, 15m, 1h, 4h)
+    بنفس طريقة البوت القديم V13.0
+    """
     result = {}
     symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
     st_mult = 2.5 if asset_type == "oil" else 2.2
@@ -1600,84 +1589,163 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
     }
     
     for name, interval in timeframes.items():
-        data = get_mexc_candles(symbol, interval, 100)
-        if data and data.get("closes"):
-            st_result = calculate_supertrend_vpt_correct(data, st_mult=st_mult, st_period=100, vpt_len=10)
-            if st_result:
-                _, trend, _ = st_result
-                trend_text = "صاعد 📈" if trend[-1] == 1 else "هابط 📉" if trend[-1] == -1 else "محايد ⚪"
-                result[name] = trend_text
+        try:
+            data = get_mexc_candles(symbol, interval, 200)
+            
+            if not data or not data.get("closes") or len(data["closes"]) < 50:
+                result[name] = "محايد ⚪ (بيانات غير كافية)"
+                continue
+            
+            st_result = calculate_supertrend_vpt_correct(
+                data,
+                st_mult=st_mult,
+                st_period=100,
+                vpt_len=10
+            )
+            
+            if st_result is None:
+                closes = data["closes"]
+                if len(closes) >= 20:
+                    sma_short = sum(closes[-5:]) / 5
+                    sma_long = sum(closes[-20:]) / 20
+                    if sma_short > sma_long * 1.003:
+                        result[name] = "صاعد 📈"
+                    elif sma_short < sma_long * 0.997:
+                        result[name] = "هابط 📉"
+                    else:
+                        result[name] = "محايد ⚪"
+                else:
+                    result[name] = "محايد ⚪"
+                continue
+            
+            st_line_arr, trend, _ = st_result
+            
+            if not trend or len(trend) == 0:
+                result[name] = "محايد ⚪"
+                continue
+            
+            if trend[-1] == 1:
+                result[name] = "صاعد 📈"
+            elif trend[-1] == -1:
+                result[name] = "هابط 📉"
             else:
-                result[name] = "غير متوفر"
-        else:
-            result[name] = "غير متوفر"
+                result[name] = "محايد ⚪"
+                
+        except Exception as e:
+            logger.warning(f"⚠️ فشل تحليل {name} لـ {asset_type}: {e}")
+            result[name] = "محايد ⚪ (خطأ)"
     
     return result
 
 
 def handle_analysis(asset_type: str, chat_id: str):
-    """معالجة طلب التحليل الشامل مع عرض الفريمات الأربعة"""
+    """معالجة طلب التحليل الشامل"""
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     
     try:
-        # إرسال رسالة "جاري التحليل" فوراً (إرسال مباشر)
         queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
-        logger.info(f"✅ [handle_analysis] تم إرسال رسالة 'جاري التحليل' لـ {asset_type}")
-    except Exception as e:
-        logger.error(f"❌ [handle_analysis] فشل إرسال رسالة 'جاري التحليل': {e}")
+    except:
+        pass
     
     try:
-        # ── 1. جلب البيانات الرئيسية (15 دقيقة) ──
         symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
         data = get_mexc_candles(symbol, "Min15", 200)
-        if not data:
-            logger.error(f"❌ [handle_analysis] فشل جلب بيانات {asset_type}")
+        if not data or not data.get("closes"):
             queue_telegram_message(f"⚠️ تعذر جلب بيانات {'النفط' if asset_type == 'oil' else 'الفضة'}", chat_id)
             return
         
-        logger.info(f"✅ [handle_analysis] تم جلب بيانات {asset_type} (عدد الشموع: {len(data.get('closes', []))})")
+        closes = data["closes"]
+        price = closes[-1]
         
-        # ── 2. تحليل الفريمات الأربعة ──
+        rsi_values = calculate_rsi_7(closes)
+        rsi = rsi_values[-1] if rsi_values else 50
+        
+        macd_line, signal_line, hist = calculate_macd_full(closes)
+        macd = hist[-1] if hist else 0
+        
+        adx = calculate_adx_14(data) or 20
+        
+        atr = calculate_atr_14(data) or 0
+        atr_pct = (atr / price * 100) if price > 0 and atr else 0
+        
         timeframes_trends = analyze_timeframes(asset_type)
-        logger.info(f"✅ [handle_analysis] تحليل الفريمات: {timeframes_trends}")
         
-        # ── 3. الحصول على التحليل من AI ──
         open_trade = get_current_open_trade(asset_type)
-        analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
+        ai_analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
         
-        if analysis.get("error"):
-            logger.error(f"❌ [handle_analysis] خطأ من AI: {analysis['error']}")
-            queue_telegram_message(f"⚠️ {analysis['error']}", chat_id)
-            return
-        
-        # ── 4. بناء الرسالة النهائية ──
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
-        price = data["closes"][-1]
+        
+        evaluation = ai_analysis.get('evaluation', 'متوسط')
+        score = ai_analysis.get('score', 50)
+        risk_level = ai_analysis.get('risk_level', 1)
+        reasons = ai_analysis.get('reasons', [])
+        advice = ai_analysis.get('advice', '')
+        
+        if score < 10:
+            score = 50
+            evaluation = "متوسط"
         
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
-        msg += "━" * 35 + "\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg += f"💰 **السعر الحالي:** ${safe_price(price)}\n"
-        msg += f"📈 **التقييم:** {analysis.get('evaluation', 'متوسط')}\n"
-        msg += f"📊 **الدرجة:** {analysis.get('score', 50)}/100\n"
-        msg += f"⚠️ **مستوى الخطر:** {analysis.get('risk_level', 1)}/3\n"
-        msg += "━" * 35 + "\n\n"
+        msg += f"📈 **التقييم:** {evaluation}\n"
+        msg += f"📊 **الدرجة:** {score}/100\n"
+        msg += f"⚠️ **مستوى الخطر:** {risk_level}/3\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        # ── 5. عرض تحليل الفريمات الأربعة ──
         msg += "🕐 **تحليل الفريمات الزمنية:**\n"
-        msg += f"   • 5 دقائق: {timeframes_trends.get('5m', 'غير متوفر')}\n"
-        msg += f"   • 15 دقيقة: {timeframes_trends.get('15m', 'غير متوفر')}\n"
-        msg += f"   • ساعة: {timeframes_trends.get('1h', 'غير متوفر')}\n"
-        msg += f"   • 4 ساعات: {timeframes_trends.get('4h', 'غير متوفر')}\n"
+        msg += f"   • 5 دقائق: {timeframes_trends.get('5m', 'محايد ⚪')}\n"
+        msg += f"   • 15 دقيقة: {timeframes_trends.get('15m', 'محايد ⚪')}\n"
+        msg += f"   • ساعة: {timeframes_trends.get('1h', 'محايد ⚪')}\n"
+        msg += f"   • 4 ساعات: {timeframes_trends.get('4h', 'محايد ⚪')}\n"
         msg += "\n"
         
-        # ── 6. عرض الأسباب والنصيحة ──
+        msg += "📊 **المؤشرات الفنية:**\n"
+        msg += f"   • RSI (7): {rsi:.1f}\n"
+        msg += f"   • ADX (14): {adx:.1f}\n"
+        msg += f"   • MACD Histogram: {macd:.4f}\n"
+        msg += f"   • ATR: ${atr:.4f} ({atr_pct:.2f}%)\n"
+        msg += "\n"
+        
         msg += "📋 **الأسباب:**\n"
-        for reason in analysis.get('reasons', ['لا توجد أسباب']):
-            msg += f"   • {reason}\n"
+        if reasons and len(reasons) > 0 and reasons[0] != "لا توجد أسباب محددة":
+            for reason in reasons[:4]:
+                msg += f"   • {reason}\n"
+        else:
+            if rsi > 70:
+                msg += f"   • RSI في منطقة ذروة شراء ({rsi:.1f})\n"
+            elif rsi < 30:
+                msg += f"   • RSI في منطقة ذروة بيع ({rsi:.1f})\n"
+            else:
+                msg += f"   • RSI محايد ({rsi:.1f})\n"
+            
+            if adx > 25:
+                msg += f"   • ADX يشير إلى اتجاه قوي ({adx:.1f})\n"
+            else:
+                msg += f"   • ADX ضعيف ({adx:.1f}) - سوق عرضي\n"
+            
+            bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
+            bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
+            if bullish >= 3:
+                msg += f"   • {bullish}/4 فريمات صاعدة - اتجاه صاعد قوي\n"
+            elif bearish >= 3:
+                msg += f"   • {bearish}/4 فريمات هابطة - اتجاه هابط قوي\n"
+            else:
+                msg += f"   • {bullish} صاعدة / {bearish} هابطة - سوق متذبذب\n"
         
-        msg += f"\n💡 **نصيحة Tona AI:**\n{analysis.get('advice', 'لا توجد نصيحة')}\n"
+        if advice and advice != "لا توجد نصيحة محددة":
+            msg += f"\n💡 **نصيحة Tona AI:**\n{advice}\n"
+        else:
+            msg += "\n💡 **نصيحة Tona AI:**\n"
+            bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
+            bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
+            if bullish >= 3 and rsi < 70:
+                msg += "الاتجاه العام صاعد، يمكن النظر في صفقات شراء مع إدارة المخاطر.\n"
+            elif bearish >= 3 and rsi > 30:
+                msg += "الاتجاه العام هابط، يمكن النظر في صفقات بيع أو الانتظار.\n"
+            else:
+                msg += "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة.\n"
         
-        # ── 7. معلومات الصفقة المفتوحة إن وجدت ──
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
@@ -1688,14 +1756,8 @@ def handle_analysis(asset_type: str, chat_id: str):
         
         msg += "\n\n💙 Tona AI: أنا هنا لمساعدتك!"
         
-        logger.info(f"✅ [handle_analysis] تم بناء الرسالة لـ {asset_type} (طول: {len(msg)})")
-        
-        # ── 8. إرسال الرسالة النهائية (إرسال مباشر) ──
-        result = queue_telegram_message(msg, chat_id)
-        if result:
-            logger.info(f"✅ [handle_analysis] تم إرسال التحليل بنجاح لـ {asset_type}")
-        else:
-            logger.error(f"❌ [handle_analysis] فشل إرسال التحليل لـ {asset_type}")
+        logger.info(f"✅ تم بناء التحليل لـ {asset_type} (طول: {len(msg)})")
+        queue_telegram_message(msg, chat_id)
         
     except Exception as e:
         logger.error(f"❌ [handle_analysis] استثناء: {e}")
@@ -1984,49 +2046,40 @@ def handle_message(text: str, chat_id: str):
     clean_text = text.strip()
     logger.info(f"📩 [handle_message] رسالة من {chat_id}: '{clean_text}'")
     
-    # ── الأوامر الأساسية ──
     if clean_text in ["/start", "قائمة", "منيو", "/menu"]:
         send_main_menu(chat_id)
         return
     
-    # ── تحليل النفط ──
     if clean_text in ["🛢️ تحليل النفط", "نفط", "oil"]:
         logger.info("🔍 [handle_message] بدء تحليل النفط")
         handle_analysis("oil", chat_id)
         return
     
-    # ── تحليل الفضة ──
     if clean_text in ["🥈 تحليل الفضة", "فضة", "silver"]:
         logger.info("🔍 [handle_message] بدء تحليل الفضة")
         handle_analysis("silver", chat_id)
         return
     
-    # ── وضع الصفقة الحالية ──
     if clean_text in ["🔍 وضع الصفقة الحالية", "وضع الصفقة", "حالة"]:
         handle_position_status(chat_id)
         return
     
-    # ── فتح صفقة يدوياً ──
     if clean_text in ["📌 فتح صفقة يدوياً", "فتح يدوي"]:
         handle_manual_open(chat_id)
         return
     
-    # ── تقرير الأداء ──
     if clean_text in ["📊 تقرير الأداء", "إحصائيات"]:
         handle_performance_report(chat_id)
         return
     
-    # ── تقرير التعلم العميق ──
     if clean_text in ["🧠 تقرير التعلم العميق", "تقرير التعلم"]:
         handle_learning_report(chat_id)
         return
     
-    # ── تقرير استخباراتي ──
     if clean_text in ["📰 تقرير استخباراتي", "استخبارات"]:
         handle_intelligence_report(chat_id)
         return
     
-    # ── إغلاق الصفقة ──
     if clean_text in ["❌ إغلاق النفط", "أغلق النفط"]:
         close_trade_manual("oil", chat_id)
         return
@@ -2039,12 +2092,10 @@ def handle_message(text: str, chat_id: str):
         close_trade_manual(None, chat_id)
         return
     
-    # ── فتح صفقة يدوياً (أمر نصي) ──
     if clean_text.startswith("فتح صفقة"):
         handle_manual_open_command(clean_text, chat_id)
         return
     
-    # ── أي رسالة أخرى ──
     queue_telegram_message(f"💙 Tona AI: أمر غير معروف. استخدم الأزرار أو اكتب /start للقائمة.", chat_id)
     
 # ====================================================================================
