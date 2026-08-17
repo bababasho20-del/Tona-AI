@@ -1421,7 +1421,7 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 
 
 # ====================================================================================
-# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة
+# 📦 PART 09: بوابة المستخدم (Flask + Telegram) - المعدلة بالكامل
 # ====================================================================================
 
 app = Flask(__name__)
@@ -1458,21 +1458,30 @@ def webhook():
 
 
 def queue_telegram_message(text: str, chat_id: str = None):
-    """إضافة رسالة إلى طابور الإرسال"""
+    """إضافة رسالة إلى طابور الإرسال مع سجلات تفصيلية"""
     if not text or text.strip() == "":
+        logger.warning("⚠️ queue_telegram_message: نص فارغ، تم التخطي")
         return False
+    
     target = chat_id or CHAT_ID
     if not target:
-        logger.error("❌ queue_telegram_message: لا يوجد chat_id")
+        logger.error("❌ queue_telegram_message: لا يوجد chat_id (لا من المعامل ولا من CHAT_ID)")
         return False
+    
+    logger.info(f"📨 queue_telegram_message: إضافة رسالة إلى الطابور (الطول: {len(text)}) لـ {target}")
     TELEGRAM_QUEUE.put({"text": text, "chat_id": target})
+    logger.info(f"✅ queue_telegram_message: تم إضافة الرسالة، حجم الطابور الآن: {TELEGRAM_QUEUE.qsize()}")
     return True
 
 
 def _send_telegram_message(text: str, chat_id: str):
-    """إرسال رسالة عبر Telegram"""
+    """إرسال رسالة عبر Telegram مع سجلات تفصيلية"""
     if not TELEGRAM_TOKEN:
+        logger.error("❌ _send_telegram_message: TELEGRAM_TOKEN غير موجود")
         return
+    
+    logger.info(f"📤 _send_telegram_message: محاولة إرسال رسالة (طول: {len(text)}) إلى {chat_id}")
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         resp = requests.post(url, json={
@@ -1481,23 +1490,28 @@ def _send_telegram_message(text: str, chat_id: str):
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }, timeout=10)
-        if resp.status_code != 200:
-            logger.warning(f"⚠️ فشل إرسال: {resp.status_code}")
+        if resp.status_code == 200:
+            logger.info(f"✅ _send_telegram_message: تم الإرسال بنجاح إلى {chat_id}")
+        else:
+            logger.error(f"❌ _send_telegram_message: فشل الإرسال (status {resp.status_code}): {resp.text[:200]}")
     except Exception as e:
-        logger.error(f"❌ خطأ في الإرسال: {e}")
+        logger.error(f"❌ _send_telegram_message: استثناء: {e}")
 
 
 def telegram_sender():
-    """خيط إرسال الرسائل"""
-    logger.info("📨 [Sender] بدأ التشغيل")
+    """خيط إرسال الرسائل - يعالج الطابور بشكل مستمر"""
+    logger.info("📨 [Sender] بدأ التشغيل - مستمع للطابور")
     while True:
         try:
             msg = TELEGRAM_QUEUE.get(timeout=1)
+            logger.info(f"📨 [Sender] تم استلام رسالة من الطابور (الطول: {len(msg['text'])}) لـ {msg['chat_id']}")
             _send_telegram_message(msg["text"], msg["chat_id"])
+            logger.info(f"✅ [Sender] تمت معالجة الرسالة، حجم الطابور المتبقي: {TELEGRAM_QUEUE.qsize()}")
         except queue.Empty:
             continue
         except Exception as e:
             logger.error(f"❌ [Sender] خطأ: {e}")
+            time.sleep(1)
 
 
 def send_main_menu(chat_id: str):
@@ -1523,7 +1537,7 @@ def send_main_menu(chat_id: str):
     reply_markup = {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={
+        resp = requests.post(url, json={
             "chat_id": chat_id,
             "text": """🚀 **Tona AI V2.0** - المستشار الذكي
 
@@ -1543,6 +1557,10 @@ def send_main_menu(chat_id: str):
             "reply_markup": reply_markup,
             "parse_mode": "HTML"
         }, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"✅ تم إرسال القائمة لـ {chat_id}")
+        else:
+            logger.error(f"❌ فشل إرسال القائمة: {resp.status_code}")
     except Exception as e:
         logger.error(f"❌ فشل إرسال القائمة: {e}")
 
@@ -1580,8 +1598,10 @@ def handle_analysis(asset_type: str, chat_id: str):
     """معالجة طلب التحليل الشامل مع عرض الفريمات الأربعة"""
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     
+    # ── إرسال رسالة "جاري التحليل" فوراً ──
     try:
         queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
+        logger.info(f"✅ [handle_analysis] تم إرسال رسالة 'جاري التحليل' لـ {asset_type}")
     except Exception as e:
         logger.error(f"❌ [handle_analysis] فشل إرسال رسالة 'جاري التحليل': {e}")
     
@@ -1648,8 +1668,13 @@ def handle_analysis(asset_type: str, chat_id: str):
         msg += "\n\n💙 Tona AI: أنا هنا لمساعدتك!"
         
         logger.info(f"✅ [handle_analysis] تم بناء الرسالة لـ {asset_type} (طول: {len(msg)})")
-        queue_telegram_message(msg, chat_id)
-        logger.info(f"✅ [handle_analysis] تم إرسال التحليل لـ {asset_type}")
+        
+        # ── 8. إرسال الرسالة النهائية ──
+        result = queue_telegram_message(msg, chat_id)
+        if result:
+            logger.info(f"✅ [handle_analysis] تم إضافة التحليل إلى الطابور بنجاح")
+        else:
+            logger.error(f"❌ [handle_analysis] فشل إضافة التحليل إلى الطابور")
         
     except Exception as e:
         logger.error(f"❌ [handle_analysis] استثناء: {e}")
@@ -1660,45 +1685,53 @@ def handle_analysis(asset_type: str, chat_id: str):
 
 def handle_position_status(chat_id: str):
     """عرض وضع الصفقات المفتوحة"""
-    msg = "📊 **وضع الصفقات الحالية**\n"
-    msg += "━" * 30 + "\n\n"
+    logger.info(f"🔍 [handle_position_status] بدء عرض وضع الصفقات لـ {chat_id}")
     
-    has_trade = False
-    for asset_type in ["oil", "silver"]:
-        trade = get_current_open_trade(asset_type)
-        if not trade:
-            msg += f"{'🛢️' if asset_type == 'oil' else '🥈'} **{asset_type}**: لا توجد صفقة مفتوحة\n\n"
-            continue
+    try:
+        msg = "📊 **وضع الصفقات الحالية**\n"
+        msg += "━" * 30 + "\n\n"
         
-        has_trade = True
-        asset_label = "النفط" if asset_type == "oil" else "الفضة"
-        entry = trade.get('entry_price', 0)
-        trade_type = trade.get('type', 'BUY')
-        sl = trade.get('sl')
-        tp = trade.get('tp')
+        has_trade = False
+        for asset_type in ["oil", "silver"]:
+            trade = get_current_open_trade(asset_type)
+            if not trade:
+                msg += f"{'🛢️' if asset_type == 'oil' else '🥈'} **{asset_type}**: لا توجد صفقة مفتوحة\n\n"
+                continue
+            
+            has_trade = True
+            asset_label = "النفط" if asset_type == "oil" else "الفضة"
+            entry = trade.get('entry_price', 0)
+            trade_type = trade.get('type', 'BUY')
+            sl = trade.get('sl')
+            tp = trade.get('tp')
+            
+            symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+            data = get_mexc_candles(symbol, "Min1", 5)
+            current_price = data["closes"][-1] if data and data.get("closes") else entry
+            
+            profit_pct = ((current_price - entry) / entry * 100) if trade_type == "BUY" else ((entry - current_price) / entry * 100)
+            profit_dollars = AccountingSystem.calculate_profit_dollars(entry, current_price, trade_type)
+            
+            msg += f"🛢️ **{asset_label}**\n"
+            msg += f"   • النوع: {trade_type}\n"
+            msg += f"   • الدخول: ${safe_price(entry)}\n"
+            msg += f"   • الحالي: ${safe_price(current_price)}\n"
+            msg += f"   • الربح/خسارة: {profit_pct:+.2f}% (${profit_dollars:+.2f})\n"
+            msg += f"   • وقف الخسارة: ${safe_price(sl)}\n"
+            msg += f"   • الهدف: ${safe_price(tp)}\n"
+            msg += f"   • RR: {trade.get('rr', 0):.2f}\n"
+            msg += f"   • المصدر: {'يدوي' if trade.get('source') == 'manual' else 'تلقائي'}\n\n"
         
-        symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
-        data = get_mexc_candles(symbol, "Min1", 5)
-        current_price = data["closes"][-1] if data and data.get("closes") else entry
+        if not has_trade:
+            msg += "🔄 لا توجد صفقات مفتوحة حالياً.\n"
+            msg += "💡 يمكنك فتح صفقة يدوياً عبر زر '📌 فتح صفقة يدوياً'"
         
-        profit_pct = ((current_price - entry) / entry * 100) if trade_type == "BUY" else ((entry - current_price) / entry * 100)
-        profit_dollars = AccountingSystem.calculate_profit_dollars(entry, current_price, trade_type)
+        queue_telegram_message(msg, chat_id)
+        logger.info(f"✅ [handle_position_status] تم إرسال وضع الصفقات لـ {chat_id}")
         
-        msg += f"🛢️ **{asset_label}**\n"
-        msg += f"   • النوع: {trade_type}\n"
-        msg += f"   • الدخول: ${safe_price(entry)}\n"
-        msg += f"   • الحالي: ${safe_price(current_price)}\n"
-        msg += f"   • الربح/خسارة: {profit_pct:+.2f}% (${profit_dollars:+.2f})\n"
-        msg += f"   • وقف الخسارة: ${safe_price(sl)}\n"
-        msg += f"   • الهدف: ${safe_price(tp)}\n"
-        msg += f"   • RR: {trade.get('rr', 0):.2f}\n"
-        msg += f"   • المصدر: {'يدوي' if trade.get('source') == 'manual' else 'تلقائي'}\n\n"
-    
-    if not has_trade:
-        msg += "🔄 لا توجد صفقات مفتوحة حالياً.\n"
-        msg += "💡 يمكنك فتح صفقة يدوياً عبر زر '📌 فتح صفقة يدوياً'"
-    
-    queue_telegram_message(msg, chat_id)
+    except Exception as e:
+        logger.error(f"❌ [handle_position_status] خطأ: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
 
 
 def handle_manual_open(chat_id: str):
@@ -1962,27 +1995,32 @@ def handle_message(text: str, chat_id: str):
             queue_telegram_message(f"⚠️ حدث خطأ في تحليل الفضة: {str(e)[:100]}", chat_id)
         return
     
-    # ── باقي الأوامر ──
+    # ── وضع الصفقة الحالية ──
     if clean_text in ["🔍 وضع الصفقة الحالية", "وضع الصفقة", "حالة"]:
-        threading.Thread(target=handle_position_status, args=(chat_id,), daemon=True).start()
+        handle_position_status(chat_id)
         return
     
+    # ── فتح صفقة يدوياً ──
     if clean_text in ["📌 فتح صفقة يدوياً", "فتح يدوي"]:
-        threading.Thread(target=handle_manual_open, args=(chat_id,), daemon=True).start()
+        handle_manual_open(chat_id)
         return
     
+    # ── تقرير الأداء ──
     if clean_text in ["📊 تقرير الأداء", "إحصائيات"]:
-        threading.Thread(target=handle_performance_report, args=(chat_id,), daemon=True).start()
+        handle_performance_report(chat_id)
         return
     
+    # ── تقرير التعلم العميق ──
     if clean_text in ["🧠 تقرير التعلم العميق", "تقرير التعلم"]:
-        threading.Thread(target=handle_learning_report, args=(chat_id,), daemon=True).start()
+        handle_learning_report(chat_id)
         return
     
+    # ── تقرير استخباراتي ──
     if clean_text in ["📰 تقرير استخباراتي", "استخبارات"]:
-        threading.Thread(target=handle_intelligence_report, args=(chat_id,), daemon=True).start()
+        handle_intelligence_report(chat_id)
         return
     
+    # ── إغلاق الصفقة ──
     if clean_text in ["❌ إغلاق النفط", "أغلق النفط"]:
         close_trade_manual("oil", chat_id)
         return
@@ -1995,13 +2033,14 @@ def handle_message(text: str, chat_id: str):
         close_trade_manual(None, chat_id)
         return
     
+    # ── فتح صفقة يدوياً (أمر نصي) ──
     if clean_text.startswith("فتح صفقة"):
-        threading.Thread(target=handle_manual_open_command, args=(clean_text, chat_id), daemon=True).start()
+        handle_manual_open_command(clean_text, chat_id)
         return
     
     # ── أي رسالة أخرى ──
     queue_telegram_message(f"💙 Tona AI: أمر غير معروف. استخدم الأزرار أو اكتب /start للقائمة.", chat_id)
-
+    
 # ====================================================================================
 # 📦 PART 10: ماسح الإشارات (Scanner)
 # ====================================================================================
