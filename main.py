@@ -1006,80 +1006,8 @@ def get_matching_scenarios(indicators: Dict) -> List[Dict]:
     return scenarios[-3:]
 
 # ====================================================================================
-# 📦 PART 06: المدير التنفيذي (فتح وإغلاق الصفقات)
+# 📦 PART 06: المدير التنفيذي (فتح وإغلاق الصفقات) - المعدل بالكامل
 # ====================================================================================
-
-def get_trades_file(asset_type: str) -> str:
-    return TRADES_FILE_OIL if asset_type == "oil" else TRADES_FILE_SILVER
-
-def get_position_file(asset_type: str) -> str:
-    return POSITION_FILE_OIL if asset_type == "oil" else POSITION_FILE_SILVER
-
-def safe_file_operation(asset_type: str, operation, *args, **kwargs):
-    lock = FILE_LOCKS[asset_type]
-    with lock:
-        return operation(*args, **kwargs)
-
-def load_trades_history(asset_type: str) -> Dict:
-    """تحميل سجل الصفقات"""
-    file = get_trades_file(asset_type)
-    default = {"trades": [], "last_cleanup": datetime.now().isoformat()}
-    try:
-        if os.path.exists(file):
-            with open(file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, dict) and 'trades' in data:
-                    return data
-    except Exception as e:
-        logger.error(f"❌ فشل تحميل {asset_type}: {e}")
-    return default
-
-def save_trades_history(asset_type: str, history: Dict) -> bool:
-    """حفظ سجل الصفقات"""
-    file = get_trades_file(asset_type)
-    try:
-        os.makedirs(os.path.dirname(file) if os.path.dirname(file) else '.', exist_ok=True)
-        with open(file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        logger.error(f"❌ فشل حفظ {asset_type}: {e}")
-        return False
-
-def get_current_open_trade(asset_type: str) -> Optional[Dict]:
-    """الحصول على الصفقة المفتوحة الحالية"""
-    file = get_position_file(asset_type)
-    try:
-        if os.path.exists(file):
-            with open(file, 'r', encoding='utf-8') as f:
-                trade = json.load(f)
-                if trade and trade.get('status') == 'open':
-                    return trade
-    except Exception as e:
-        logger.error(f"❌ فشل قراءة {asset_type}: {e}")
-    return None
-
-def save_current_trade(asset_type: str, trade: Dict) -> bool:
-    """حفظ الصفقة المفتوحة"""
-    file = get_position_file(asset_type)
-    try:
-        with open(file, 'w', encoding='utf-8') as f:
-            json.dump(trade, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        logger.error(f"❌ فشل حفظ {asset_type}: {e}")
-        return False
-
-def delete_current_trade(asset_type: str) -> bool:
-    """حذف ملف الصفقة المفتوحة"""
-    file = get_position_file(asset_type)
-    try:
-        if os.path.exists(file):
-            os.remove(file)
-        return True
-    except Exception as e:
-        logger.error(f"❌ فشل حذف {asset_type}: {e}")
-        return False
 
 class TradingCore:
     """مدير الصفقات - فتح، إغلاق، مراقبة"""
@@ -1093,7 +1021,6 @@ class TradingCore:
         فتح صفقة جديدة (تلقائياً أو يدوياً)
         source: "auto" أو "manual"
         """
-        # التحقق من وجود صفقة مفتوحة
         existing = get_current_open_trade(asset_type)
         if existing:
             logger.info(f"⚠️ توجد صفقة {asset_type} مفتوحة بالفعل")
@@ -1101,15 +1028,14 @@ class TradingCore:
         
         signal = signal_data.get('signal')
         price = signal_data.get('price', 0)
-        sl = signal_data.get('sl', 0)
-        tp = signal_data.get('tp', 0)
+        sl = signal_data.get('sl')
+        tp = signal_data.get('tp')
         rr = signal_data.get('rr', 0)
         
         if signal not in ['BUY', 'SELL'] or price <= 0:
             logger.error(f"❌ بيانات إشارة غير صالحة لـ {asset_type}")
             return False
         
-        # إنشاء معرف الصفقة
         trade_id = f"{asset_type}_{int(time.time())}"
         
         # حساب المؤشرات عند الدخول (للتعلم)
@@ -1119,7 +1045,7 @@ class TradingCore:
         rsi_val = rsi[-1] if rsi else 50
         macd_line, sig_line, hist = calculate_macd_full(closes)
         macd_val = hist[-1] if hist else 0
-        adx = calculate_adx_14(data)  # من PART 02
+        adx = calculate_adx_14(data) if data else 20
         
         trade = {
             "trade_id": trade_id,
@@ -1142,30 +1068,26 @@ class TradingCore:
             "warnings_log": []
         }
         
-        # حفظ الصفقة
         if not save_current_trade(asset_type, trade):
             logger.error(f"❌ فشل حفظ صفقة {asset_type}")
             return False
         
-        # إضافة إلى سجل الصفقات
         history = load_trades_history(asset_type)
         history["trades"].append(trade)
         save_trades_history(asset_type, history)
         
-        # إرسال إشعار
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
         signal_label = "شراء 🟢" if signal == "BUY" else "بيع 🔴"
         msg = f"📊 **توصية Tona AI - {asset_label}**\n"
-        msg += f"🎯 {signal_label} عند ${price:.2f}\n"
-        msg += f"🛡️ وقف الخسارة: ${sl:.2f}\n"
-        msg += f"🎯 الهدف: ${tp:.2f}\n"
+        msg += f"🎯 {signal_label} عند ${safe_price(price)}\n"
+        msg += f"🛡️ وقف الخسارة: ${safe_price(sl)}\n"
+        msg += f"🎯 الهدف: ${safe_price(tp)}\n"
         msg += f"📊 RR: {rr:.2f}\n"
         if source == "manual":
             msg += "📌 تم الفتح يدوياً\n"
         msg += "\n💙 Tona AI: سأراقب الصفقة وأحذرك عند الحاجة."
         queue_telegram_message(msg)
         
-        # تفعيل المراقبة
         with MONITOR_TRIGGER_LOCK:
             MONITOR_TRIGGER[asset_type] = {"reason": "new_trade", "time": time.time()}
         
@@ -1173,9 +1095,7 @@ class TradingCore:
         return True
     
     def close_trade(self, asset_type: str, reason: str, current_price: Optional[float] = None) -> bool:
-        """
-        إغلاق الصفقة المفتوحة
-        """
+        """إغلاق الصفقة المفتوحة"""
         with CLOSE_LOCKS[asset_type]:
             open_trade = get_current_open_trade(asset_type)
             if not open_trade:
@@ -1186,16 +1106,13 @@ class TradingCore:
             trade_type = open_trade.get('type', 'BUY')
             trade_id = open_trade.get('trade_id', '')
             
-            # الحصول على السعر الحالي
             if current_price is None:
                 symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
                 data = get_mexc_candles(symbol, "Min1", 5)
                 current_price = data["closes"][-1] if data and data.get("closes") else entry_price
             
-            # حساب الربح
             profit_dollars = AccountingSystem.calculate_profit_dollars(entry_price, current_price, trade_type)
             
-            # تحديث سجل الصفقات
             history = load_trades_history(asset_type)
             trade_found = False
             for trade in history["trades"]:
@@ -1207,7 +1124,6 @@ class TradingCore:
                     trade["profit_dollars"] = profit_dollars
                     trade["exit_timestamp"] = datetime.now().isoformat()
                     trade["duration_minutes"] = int((datetime.now() - datetime.fromisoformat(trade.get("timestamp", datetime.now().isoformat()))).total_seconds() / 60)
-                    # مؤشرات الخروج (إن أمكن)
                     data = get_mexc_candles("USOIL_USDT" if asset_type == "oil" else "SILVER_USDT", "Min15", 200)
                     if data and data.get("closes"):
                         closes = data["closes"]
@@ -1215,7 +1131,7 @@ class TradingCore:
                         trade["exit_indicators"] = {
                             "rsi": rsi[-1] if rsi else 50,
                             "macd": calculate_macd_full(closes)[2][-1] if calculate_macd_full(closes)[2] else 0,
-                            "adx": calculate_adx_14(data)
+                            "adx": calculate_adx_14(data) or 20
                         }
                     break
             
@@ -1223,25 +1139,19 @@ class TradingCore:
                 logger.error(f"❌ لم يُعثر على الصفقة {trade_id} في السجل")
                 return False
             
-            # حفظ السجل
             save_trades_history(asset_type, history)
-            
-            # حذف ملف الصفقة المفتوحة
             delete_current_trade(asset_type)
             
-            # تحديث حالة المراقبة
             with MONITOR_TRIGGER_LOCK:
                 MONITOR_TRIGGER[asset_type] = None
             
-            # ── التعلم من الصفقة ──
             self._learn_from_trade(asset_type, trade)
             
-            # إرسال إشعار الإغلاق
             asset_label = "النفط" if asset_type == "oil" else "الفضة"
             profit_label = "ربح ✅" if profit_dollars > 0 else "خسارة ❌" if profit_dollars < 0 else "تعادل ⚪"
             msg = f"📊 **تم إغلاق صفقة {asset_label}**\n"
-            msg += f"💰 سعر الدخول: ${entry_price:.2f}\n"
-            msg += f"💰 سعر الخروج: ${current_price:.2f}\n"
+            msg += f"💰 سعر الدخول: ${safe_price(entry_price)}\n"
+            msg += f"💰 سعر الخروج: ${safe_price(current_price)}\n"
             msg += f"📊 النتيجة: {profit_label} (${profit_dollars:+.2f})\n"
             msg += f"📌 سبب الإغلاق: {reason}"
             queue_telegram_message(msg)
@@ -1252,38 +1162,33 @@ class TradingCore:
     def _learn_from_trade(self, asset_type: str, trade: Dict):
         """استخلاص الدروس من الصفقة المغلقة"""
         try:
-            # تحضير بيانات الصفقة للتعلم
             trade_data = {
                 "asset": asset_type,
                 "type": trade.get('type'),
-                "entry_price": trade.get('entry_price', 0),
-                "exit_price": trade.get('exit_price', 0),
-                "profit_dollars": trade.get('profit_dollars', 0),
+                "entry_price": trade.get('entry_price', 0) or 0,
+                "exit_price": trade.get('exit_price', 0) or 0,
+                "profit_dollars": trade.get('profit_dollars', 0) or 0,
                 "exit_reason": trade.get('exit_reason', ''),
                 "duration_minutes": trade.get('duration_minutes', 0),
-                "entry_rsi": trade.get('entry_indicators', {}).get('rsi', 'N/A'),
-                "entry_adx": trade.get('entry_indicators', {}).get('adx', 'N/A'),
-                "entry_macd": trade.get('entry_indicators', {}).get('macd', 'N/A'),
+                "entry_rsi": trade.get('entry_indicators', {}).get('rsi'),
+                "entry_adx": trade.get('entry_indicators', {}).get('adx'),
+                "entry_macd": trade.get('entry_indicators', {}).get('macd'),
                 "entry_trend": trade.get('entry_indicators', {}).get('trend', 'N/A'),
-                "exit_rsi": trade.get('exit_indicators', {}).get('rsi', 'N/A'),
-                "exit_adx": trade.get('exit_indicators', {}).get('adx', 'N/A'),
-                "exit_macd": trade.get('exit_indicators', {}).get('macd', 'N/A'),
+                "exit_rsi": trade.get('exit_indicators', {}).get('rsi'),
+                "exit_adx": trade.get('exit_indicators', {}).get('adx'),
+                "exit_macd": trade.get('exit_indicators', {}).get('macd'),
                 "exit_trend": trade.get('exit_indicators', {}).get('trend', 'N/A')
             }
             
-            # الحصول على سياق السوق الحالي
             market_profile = load_market_profile()
             context = market_profile.get(asset_type, "لا توجد بيانات كافية")
             
-            # استخلاص الدرس
             lesson_result = self.ai_core.extract_deep_lesson(trade_data, context)
             
-            # حفظ الدرس
             if lesson_result.get('lesson') and lesson_result['lesson'] != "تعذر استخلاص درس":
                 add_deep_lesson(lesson_result['lesson'])
                 logger.info(f"🧠 تم حفظ درس: {lesson_result['lesson'][:50]}...")
             
-            # حفظ السيناريو
             if lesson_result.get('scenario') and lesson_result.get('condition'):
                 scenario = {
                     "condition": lesson_result['condition'],
@@ -1295,14 +1200,12 @@ class TradingCore:
                 add_scenario(scenario)
                 logger.info(f"📋 تم حفظ سيناريو: {scenario['condition'][:50]}...")
             
-            # تحديث شخصية السوق (مرة واحدة يومياً)
             self._update_market_profile_if_needed(asset_type)
             
         except Exception as e:
             logger.error(f"❌ فشل التعلم من الصفقة: {e}")
     
     def _update_market_profile_if_needed(self, asset_type: str):
-        """تحديث شخصية السوق إذا مر أكثر من 24 ساعة على آخر تحديث"""
         profile = load_market_profile()
         last_updated = profile.get('last_updated', '')
         if last_updated:
@@ -1316,7 +1219,6 @@ class TradingCore:
             self._update_market_profile(asset_type)
     
     def _update_market_profile(self, asset_type: str):
-        """تحديث شخصية السوق"""
         try:
             history = load_trades_history(asset_type)
             trades = history.get('trades', [])
@@ -1325,18 +1227,16 @@ class TradingCore:
             if len(closed_trades) < 3:
                 return
             
-            # تجهيز البيانات للنموذج
             recent_trades = []
             for t in closed_trades[-10:]:
                 recent_trades.append({
                     "type": t.get('type'),
-                    "entry_price": t.get('entry_price', 0),
-                    "exit_price": t.get('exit_price', 0),
-                    "profit_dollars": t.get('profit_dollars', 0),
+                    "entry_price": t.get('entry_price', 0) or 0,
+                    "exit_price": t.get('exit_price', 0) or 0,
+                    "profit_dollars": t.get('profit_dollars', 0) or 0,
                     "exit_reason": t.get('exit_reason', '')
                 })
             
-            # طلب تحديث شخصية السوق
             new_profile = self.ai_core.update_market_profile(asset_type, recent_trades)
             if new_profile:
                 profile = load_market_profile()
@@ -1346,32 +1246,19 @@ class TradingCore:
                 logger.info(f"📊 تم تحديث شخصية السوق لـ {asset_type}")
         except Exception as e:
             logger.error(f"❌ فشل تحديث شخصية السوق: {e}")
-
-class AccountingSystem:
-    """نظام المحاسبة (نفس القديم)"""
-    INITIAL_CAPITAL = 100.0
-    ENTRY_AMOUNT = 1.0
-    LEVERAGE = 200.0
-    
-    @classmethod
-    def calculate_profit_dollars(cls, entry_price, exit_price, trade_type):
-        if trade_type == "BUY":
-            price_change = (exit_price - entry_price) / entry_price
-        else:
-            price_change = (entry_price - exit_price) / entry_price
-        return price_change * cls.ENTRY_AMOUNT * cls.LEVERAGE
-    
-    @classmethod
-    def format_profit(cls, profit_dollars):
-        if profit_dollars > 0:
-            return f"✅ ربح: +${profit_dollars:.2f}"
-        elif profit_dollars < 0:
-            return f"❌ خسارة: -${abs(profit_dollars):.2f}"
-        return "⚖️ متعادلة: $0.00"
-
+           
 # ====================================================================================
-# 📦 PART 07: نظام التحذير والمراقبة
+# 📦 PART 07: نظام التحذير والمراقبة (المعدل بالكامل)
 # ====================================================================================
+
+def safe_price(value, default="N/A"):
+    """تحويل القيمة إلى نص منسق برقمين عشريين، مع التعامل مع None"""
+    if value is None:
+        return default
+    try:
+        return f"{float(value):.2f}"
+    except (ValueError, TypeError):
+        return default
 
 def monitor_loop(trading_core: TradingCore):
     """حلقة المراقبة - تعمل كل 5 دقائق"""
@@ -1421,7 +1308,7 @@ def monitor_loop(trading_core: TradingCore):
                     # إغلاق تلقائي (المستوى 3)
                     msg = f"🚨 **تحذير المستوى 3 - {asset_type}**\n"
                     msg += f"{alert['message']}\n"
-                    msg += f"💰 السعر الحالي: ${current_price:.2f}\n"
+                    msg += f"💰 السعر الحالي: ${safe_price(current_price)}\n"
                     msg += "⚠️ سيتم إغلاق الصفقة تلقائياً."
                     queue_telegram_message(msg)
                     trading_core.close_trade(asset_type, f"تحذير مستوى 3: {alert['message'][:50]}", current_price)
@@ -1430,7 +1317,7 @@ def monitor_loop(trading_core: TradingCore):
                     # تحذير فقط
                     msg = f"⚠️ **تحذير المستوى 2 - {asset_type}**\n"
                     msg += f"{alert['message']}\n"
-                    msg += f"💰 السعر الحالي: ${current_price:.2f}"
+                    msg += f"💰 السعر الحالي: ${safe_price(current_price)}"
                     queue_telegram_message(msg)
                 
                 # elif level == 1: لا تفعل شيئاً
@@ -1444,25 +1331,25 @@ def monitor_loop(trading_core: TradingCore):
 def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, trading_core: TradingCore) -> bool:
     """التحقق من ضرب SL/TP (كود صلب - بدون تغيير)"""
     trade_type = open_trade.get('type', 'BUY')
-    sl = open_trade.get('sl', 0)
-    tp = open_trade.get('tp', 0)
+    sl = open_trade.get('sl')
+    tp = open_trade.get('tp')
     
     if trade_type == "BUY":
-        if sl > 0 and current_price <= sl:
+        if sl is not None and current_price <= sl:
             trading_core.close_trade(asset_type, "Hit Stop Loss", current_price)
             return True
-        if tp > 0 and current_price >= tp:
+        if tp is not None and current_price >= tp:
             trading_core.close_trade(asset_type, "Hit Take Profit", current_price)
             return True
     else:  # SELL
-        if sl > 0 and current_price >= sl:
+        if sl is not None and current_price >= sl:
             trading_core.close_trade(asset_type, "Hit Stop Loss", current_price)
             return True
-        if tp > 0 and current_price <= tp:
+        if tp is not None and current_price <= tp:
             trading_core.close_trade(asset_type, "Hit Take Profit", current_price)
             return True
     return False
-
+   
 # ====================================================================================
 # 📦 PART 08: بوابة المستخدم (Flask + Telegram)
 # ====================================================================================
