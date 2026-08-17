@@ -405,7 +405,7 @@ def generate_raw_signal(asset_type: str) -> Dict:
     return {"signal": signal, "price": price, "sl": sl, "tp": tp, "rr": rr}
 
 # ====================================================================================
-# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - جميع التحليلات هنا
+# 📦 PART 04: نواة الذكاء الاصطناعي (AI Core) - المعدل بالكامل
 # ====================================================================================
 
 class AICore:
@@ -413,7 +413,7 @@ class AICore:
     
     def __init__(self):
         self.gemini_model = None
-        self.groq_model = "openai/gpt-oss-120b"
+        self.groq_model = "openai/gpt-oss-120b"  # ✅ نفس النموذج المستخدم في البوت القديم
         
         # تهيئة Gemini
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
@@ -423,16 +423,23 @@ class AICore:
                 logger.info("✅ Gemini 3.5 Flash جاهز")
             except Exception as e:
                 logger.error(f"❌ فشل تهيئة Gemini: {e}")
+        else:
+            logger.warning("⚠️ Gemini غير متوفر")
         
-        # تهيئة Groq (نفس النموذج القديم)
+        # تهيئة Groq
         if GROQ_API_KEY:
             logger.info("✅ Groq API جاهز (نموذج: openai/gpt-oss-120b)")
         else:
             logger.warning("⚠️ Groq API غير متوفر")
     
+    # ════════════════════════════════════════════════════════════════════
+    # دوال استدعاء النماذج (مطابقة تماماً للبوت القديم الذي يعمل)
+    # ════════════════════════════════════════════════════════════════════
+    
     def _call_gemini(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """استدعاء Gemini مع إعادة محاولة"""
+        """نسخة مطابقة للبوت القديم - تستخدم Gemini"""
         if not self.gemini_model:
+            logger.warning("⚠️ Gemini غير مهيأ")
             return None
         try:
             response = self.gemini_model.generate_content(
@@ -441,13 +448,17 @@ class AICore:
             )
             if response and response.text:
                 return response.text.strip()
+            else:
+                logger.warning("⚠️ رد Gemini فارغ")
+                return None
         except Exception as e:
-            logger.warning(f"⚠️ Gemini فشل: {e}")
-        return None
+            logger.error(f"❌ Gemini فشل: {e}")
+            return None
     
     def _call_groq(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """استدعاء Groq (نفس إعدادات البوت القديم)"""
+        """نسخة مطابقة للبوت القديم - تستخدم Groq"""
         if not GROQ_API_KEY:
+            logger.warning("⚠️ Groq API Key مفقود")
             return None
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -455,21 +466,30 @@ class AICore:
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
             }
+            # ✅ نفس الهيكل المستخدم في البوت القديم
+            messages = [{"role": "user", "content": prompt}]
             payload = {
-                "model": self.groq_model,
-                "messages": [{"role": "user", "content": prompt}],
+                "model": self.groq_model,  # openai/gpt-oss-120b
+                "messages": messages,
                 "temperature": 0.3,
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
+                "top_p": 0.9  # ✅ أضف top_p كما في البوت القديم
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                if content:
+                    return content.strip()
+                else:
+                    logger.warning("⚠️ رد Groq فارغ")
+                    return None
             else:
-                logger.warning(f"⚠️ Groq خطأ: {resp.status_code}")
+                logger.error(f"❌ Groq خطأ {response.status_code}: {response.text[:200]}")
+                return None
         except Exception as e:
-            logger.warning(f"⚠️ Groq فشل: {e}")
-        return None
+            logger.error(f"❌ Groq استثناء: {e}")
+            return None
     
     def _call_model(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """استدعاء Gemini أولاً، فإن فشل يستخدم Groq"""
@@ -483,6 +503,10 @@ class AICore:
             return response
         logger.error("❌ كلا النموذجين فشلا")
         return None
+    
+    # ════════════════════════════════════════════════════════════════════
+    # دوال التحليل والتقييم (تستخدم دوال الاستدعاء أعلاه)
+    # ════════════════════════════════════════════════════════════════════
     
     def analyze_market(self, asset: str, data: Dict, open_trade: Optional[Dict] = None) -> Dict:
         """
@@ -522,7 +546,7 @@ class AICore:
 • السعر الحالي: ${price:.2f}
 • RSI (7): {rsi_val:.1f}
 • MACD Histogram: {macd_val:.4f}
-• ATR (14): {atr:.4f} ({(atr/price*100):.2f}%)
+• ATR (14): {atr:.4f} ({(atr/price*100) if price > 0 else 0:.2f}%)
 
 🕐 تحليل الفريمات:
 """
@@ -533,7 +557,10 @@ class AICore:
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
-            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+            if entry > 0:
+                profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+            else:
+                profit_pct = 0
             prompt += f"""
 ═══════════════════════════════════════
 📈 الصفقة المفتوحة:
@@ -578,7 +605,10 @@ class AICore:
         
         score_match = re.search(r'الدرجة:\s*(\d+)', response)
         if score_match:
-            result["score"] = int(score_match.group(1))
+            try:
+                result["score"] = int(score_match.group(1))
+            except ValueError:
+                pass
         
         reasons_match = re.search(r'الأسباب:\s*(.+)', response)
         if reasons_match:
@@ -591,7 +621,10 @@ class AICore:
         
         risk_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
         if risk_match:
-            result["risk_level"] = int(risk_match.group(1))
+            try:
+                result["risk_level"] = min(3, max(1, int(risk_match.group(1))))
+            except ValueError:
+                pass
         
         return result
     
@@ -608,7 +641,10 @@ class AICore:
         trade_type = open_trade.get('type', 'BUY')
         sl = open_trade.get('sl', 0)
         tp = open_trade.get('tp', 0)
-        profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+        if entry > 0:
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+        else:
+            profit_pct = 0
         
         # حساب المؤشرات الحالية
         closes = current_data.get("closes", [])
@@ -621,12 +657,13 @@ class AICore:
         # حساب المسافة إلى SL و TP
         dist_to_sl = 0
         dist_to_tp = 0
-        if sl > 0 and trade_type == "BUY":
-            dist_to_sl = (price - sl) / entry * 100 if entry > 0 else 0
-            dist_to_tp = (tp - price) / entry * 100 if tp > 0 else 0
-        elif sl > 0 and trade_type == "SELL":
-            dist_to_sl = (sl - price) / entry * 100 if entry > 0 else 0
-            dist_to_tp = (price - tp) / entry * 100 if tp > 0 else 0
+        if sl > 0 and entry > 0:
+            if trade_type == "BUY":
+                dist_to_sl = (price - sl) / entry * 100
+                dist_to_tp = (tp - price) / entry * 100 if tp > 0 else 0
+            else:
+                dist_to_sl = (sl - price) / entry * 100
+                dist_to_tp = (price - tp) / entry * 100 if tp > 0 else 0
         
         prompt = f"""أنت خبير إدارة مخاطر. قم بتحليل الخطر للصفقة التالية وأجب بالصيغة المطلوبة فقط.
 
@@ -642,7 +679,7 @@ class AICore:
 • المسافة إلى TP: {dist_to_tp:.2f}%
 • RSI: {rsi_val:.1f}
 • MACD Histogram: {macd_val:.4f}
-• ATR: {atr:.4f} ({(atr/price*100 if price > 0 else 0):.2f}%)
+• ATR: {atr:.4f} ({(atr/price*100) if price > 0 else 0:.2f}%)
 
 ═══════════════════════════════════════
 المطلوب (أجب بالصيغة التالية فقط):
@@ -661,10 +698,13 @@ class AICore:
         
         level_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
         if level_match:
-            level = int(level_match.group(1))
-            result["level"] = min(3, max(1, level))
-            if result["level"] == 3:
-                result["action"] = "close"
+            try:
+                level = int(level_match.group(1))
+                result["level"] = min(3, max(1, level))
+                if result["level"] == 3:
+                    result["action"] = "close"
+            except ValueError:
+                pass
         
         msg_match = re.search(r'الرسالة:\s*(.+)', response)
         if msg_match:
@@ -677,6 +717,11 @@ class AICore:
         استخلاص درس عميق وسيناريو من صفقة مغلقة
         يُستخدم بعد إغلاق الصفقة للتعلم
         """
+        # تنظيف القيم للحماية من None
+        entry_price = trade_data.get('entry_price', 0) or 0
+        exit_price = trade_data.get('exit_price', 0) or 0
+        profit = trade_data.get('profit_dollars', 0) or 0
+        
         prompt = f"""أنت خبير تعلم آلي في الأسواق المالية. قم بتحليل الصفقة التالية واستخلص درساً وسيناريو.
 
 ═══════════════════════════════════════
@@ -684,9 +729,9 @@ class AICore:
 ═══════════════════════════════════════
 • الأصل: {trade_data.get('asset', 'unknown')}
 • النوع: {trade_data.get('type', 'UNKNOWN')}
-• سعر الدخول: ${trade_data.get('entry_price', 0):.2f}
-• سعر الخروج: ${trade_data.get('exit_price', 0):.2f}
-• الربح/الخسارة: ${trade_data.get('profit_dollars', 0):.2f}
+• سعر الدخول: ${entry_price:.2f}
+• سعر الخروج: ${exit_price:.2f}
+• الربح/الخسارة: ${profit:.2f}
 • سبب الإغلاق: {trade_data.get('exit_reason', 'غير معروف')}
 • مدة الصفقة: {trade_data.get('duration_minutes', 0)} دقيقة
 
@@ -758,8 +803,10 @@ class AICore:
         
         trades_summary = ""
         for i, trade in enumerate(recent_trades[-10:], 1):
-            profit = trade.get('profit_dollars', 0)
-            trades_summary += f"{i}. {trade.get('type')} @ ${trade.get('entry_price', 0):.2f} → ${trade.get('exit_price', 0):.2f} | {profit:+.2f}$ | {trade.get('exit_reason', '')}\n"
+            profit = trade.get('profit_dollars', 0) or 0
+            entry = trade.get('entry_price', 0) or 0
+            exit_p = trade.get('exit_price', 0) or 0
+            trades_summary += f"{i}. {trade.get('type')} @ ${entry:.2f} → ${exit_p:.2f} | {profit:+.2f}$ | {trade.get('exit_reason', '')}\n"
         
         prompt = f"""أنت خبير تحليل أسواق. قم بتحليل سلوك سوق {asset} بناءً على آخر الصفقات واكتب وصفاً مختصراً.
 
@@ -797,10 +844,10 @@ class AICore:
         if not closed_trades:
             return "لا توجد صفقات مغلقة لتوليد التقرير"
         
-        wins = [t for t in closed_trades if t.get('profit_dollars', 0) > 0]
-        losses = [t for t in closed_trades if t.get('profit_dollars', 0) <= 0]
+        wins = [t for t in closed_trades if (t.get('profit_dollars', 0) or 0) > 0]
+        losses = [t for t in closed_trades if (t.get('profit_dollars', 0) or 0) <= 0]
         win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
-        total_profit = sum(t.get('profit_dollars', 0) for t in closed_trades)
+        total_profit = sum((t.get('profit_dollars', 0) or 0) for t in closed_trades)
         
         prompt = f"""أنت خبير استخبارات مالية. قم بتوليد تقرير استخباراتي شامل عن سوق {asset}.
 
@@ -834,7 +881,7 @@ class AICore:
         if response:
             return response
         return "تعذر توليد التقرير الاستخباراتي"
-
+       
 # ====================================================================================
 # 📦 PART 05: نظام التعلم العميق (إدارة السيناريوهات وشخصية السوق والدروس)
 # ====================================================================================
