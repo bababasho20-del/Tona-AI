@@ -1427,6 +1427,9 @@ def check_sl_tp_hit(asset_type: str, current_price: float, open_trade: Dict, tra
 app = Flask(__name__)
 CORS(app)
 
+# ── قفل لمنع تداخل إرسال الرسائل ──
+TELEGRAM_SEND_LOCK = threading.Lock()
+
 
 @app.route('/')
 def home():
@@ -1457,61 +1460,70 @@ def webhook():
         return 'OK', 200
 
 
+def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
+    """
+    إرسال رسالة مباشرة إلى Telegram (بدون طابور)
+    تُستخدم لحل مشكلة عدم وصول الرسائل
+    """
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود")
+        return False
+    
+    if not chat_id:
+        logger.error("❌ chat_id غير موجود")
+        return False
+    
+    # حماية من الإرسال المتزامن
+    with TELEGRAM_SEND_LOCK:
+        logger.info(f"📤 إرسال مباشر: (طول: {len(text)}) إلى {chat_id}")
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        try:
+            resp = requests.post(url, json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }, timeout=15)
+            
+            if resp.status_code == 200:
+                logger.info(f"✅ تم الإرسال بنجاح إلى {chat_id}")
+                return True
+            else:
+                logger.error(f"❌ فشل الإرسال (status {resp.status_code}): {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ استثناء في الإرسال: {e}")
+            return False
+
+
 def queue_telegram_message(text: str, chat_id: str = None):
-    """إضافة رسالة إلى طابور الإرسال مع سجلات تفصيلية"""
+    """
+    إضافة رسالة إلى الطابور مع إرسال مباشر (لحل مشكلة عدم الوصول)
+    """
     if not text or text.strip() == "":
-        logger.warning("⚠️ queue_telegram_message: نص فارغ، تم التخطي")
+        logger.warning("⚠️ نص فارغ، تم التخطي")
         return False
     
     target = chat_id or CHAT_ID
     if not target:
-        logger.error("❌ queue_telegram_message: لا يوجد chat_id (لا من المعامل ولا من CHAT_ID)")
+        logger.error("❌ لا يوجد chat_id")
         return False
     
-    logger.info(f"📨 queue_telegram_message: إضافة رسالة إلى الطابور (الطول: {len(text)}) لـ {target}")
-    TELEGRAM_QUEUE.put({"text": text, "chat_id": target})
-    logger.info(f"✅ queue_telegram_message: تم إضافة الرسالة، حجم الطابور الآن: {TELEGRAM_QUEUE.qsize()}")
-    return True
-
-
-def _send_telegram_message(text: str, chat_id: str):
-    """إرسال رسالة عبر Telegram مع سجلات تفصيلية"""
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ _send_telegram_message: TELEGRAM_TOKEN غير موجود")
-        return
+    # ── التحقق من طول النص (Telegram يسمح بـ 4096 حرف) ──
+    if len(text) > 4096:
+        logger.warning(f"⚠️ النص طويل جداً ({len(text)})، سيتم تقسيمه")
+        # تقسيم النص إلى أجزاء
+        parts = []
+        for i in range(0, len(text), 4000):
+            parts.append(text[i:i+4000])
+        
+        for part in parts:
+            _send_telegram_message_direct(part, target)
+        return True
     
-    logger.info(f"📤 _send_telegram_message: محاولة إرسال رسالة (طول: {len(text)}) إلى {chat_id}")
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=10)
-        if resp.status_code == 200:
-            logger.info(f"✅ _send_telegram_message: تم الإرسال بنجاح إلى {chat_id}")
-        else:
-            logger.error(f"❌ _send_telegram_message: فشل الإرسال (status {resp.status_code}): {resp.text[:200]}")
-    except Exception as e:
-        logger.error(f"❌ _send_telegram_message: استثناء: {e}")
-
-
-def telegram_sender():
-    """خيط إرسال الرسائل - يعالج الطابور بشكل مستمر"""
-    logger.info("📨 [Sender] بدأ التشغيل - مستمع للطابور")
-    while True:
-        try:
-            msg = TELEGRAM_QUEUE.get(timeout=1)
-            logger.info(f"📨 [Sender] تم استلام رسالة من الطابور (الطول: {len(msg['text'])}) لـ {msg['chat_id']}")
-            _send_telegram_message(msg["text"], msg["chat_id"])
-            logger.info(f"✅ [Sender] تمت معالجة الرسالة، حجم الطابور المتبقي: {TELEGRAM_QUEUE.qsize()}")
-        except queue.Empty:
-            continue
-        except Exception as e:
-            logger.error(f"❌ [Sender] خطأ: {e}")
-            time.sleep(1)
+    # ── إرسال مباشر ──
+    return _send_telegram_message_direct(text, target)
 
 
 def send_main_menu(chat_id: str):
@@ -1535,11 +1547,8 @@ def send_main_menu(chat_id: str):
             keyboard.append(close_row)
     
     reply_markup = {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": """🚀 **Tona AI V2.0** - المستشار الذكي
+    
+    text = """🚀 **Tona AI V2.0** - المستشار الذكي
 
 💙 أنا هنا لمساعدتك في تحليل النفط والفضة.
 
@@ -1553,14 +1562,26 @@ def send_main_menu(chat_id: str):
 • إغلاق الصفقة - إغلاق يدوي
 
 🧠 نظام التعلم العميق يعمل في الخلفية.
-💙 Tona AI: أنا هنا لخدمتك!""",
+💙 Tona AI: أنا هنا لخدمتك!"""
+    
+    # إرسال القائمة مباشرة
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود")
+        return
+    
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        resp = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
             "reply_markup": reply_markup,
             "parse_mode": "HTML"
         }, timeout=10)
+        
         if resp.status_code == 200:
             logger.info(f"✅ تم إرسال القائمة لـ {chat_id}")
         else:
-            logger.error(f"❌ فشل إرسال القائمة: {resp.status_code}")
+            logger.error(f"❌ فشل إرسال القائمة: {resp.status_code} - {resp.text[:200]}")
     except Exception as e:
         logger.error(f"❌ فشل إرسال القائمة: {e}")
 
@@ -1598,8 +1619,8 @@ def handle_analysis(asset_type: str, chat_id: str):
     """معالجة طلب التحليل الشامل مع عرض الفريمات الأربعة"""
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     
-    # ── إرسال رسالة "جاري التحليل" فوراً ──
     try:
+        # إرسال رسالة "جاري التحليل" فوراً (إرسال مباشر)
         queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
         logger.info(f"✅ [handle_analysis] تم إرسال رسالة 'جاري التحليل' لـ {asset_type}")
     except Exception as e:
@@ -1669,12 +1690,12 @@ def handle_analysis(asset_type: str, chat_id: str):
         
         logger.info(f"✅ [handle_analysis] تم بناء الرسالة لـ {asset_type} (طول: {len(msg)})")
         
-        # ── 8. إرسال الرسالة النهائية ──
+        # ── 8. إرسال الرسالة النهائية (إرسال مباشر) ──
         result = queue_telegram_message(msg, chat_id)
         if result:
-            logger.info(f"✅ [handle_analysis] تم إضافة التحليل إلى الطابور بنجاح")
+            logger.info(f"✅ [handle_analysis] تم إرسال التحليل بنجاح لـ {asset_type}")
         else:
-            logger.error(f"❌ [handle_analysis] فشل إضافة التحليل إلى الطابور")
+            logger.error(f"❌ [handle_analysis] فشل إرسال التحليل لـ {asset_type}")
         
     except Exception as e:
         logger.error(f"❌ [handle_analysis] استثناء: {e}")
@@ -1685,8 +1706,6 @@ def handle_analysis(asset_type: str, chat_id: str):
 
 def handle_position_status(chat_id: str):
     """عرض وضع الصفقات المفتوحة"""
-    logger.info(f"🔍 [handle_position_status] بدء عرض وضع الصفقات لـ {chat_id}")
-    
     try:
         msg = "📊 **وضع الصفقات الحالية**\n"
         msg += "━" * 30 + "\n\n"
@@ -1727,7 +1746,6 @@ def handle_position_status(chat_id: str):
             msg += "💡 يمكنك فتح صفقة يدوياً عبر زر '📌 فتح صفقة يدوياً'"
         
         queue_telegram_message(msg, chat_id)
-        logger.info(f"✅ [handle_position_status] تم إرسال وضع الصفقات لـ {chat_id}")
         
     except Exception as e:
         logger.error(f"❌ [handle_position_status] خطأ: {e}")
@@ -1971,28 +1989,16 @@ def handle_message(text: str, chat_id: str):
         send_main_menu(chat_id)
         return
     
-    # ── تحليل النفط (بدون خيط) ──
+    # ── تحليل النفط ──
     if clean_text in ["🛢️ تحليل النفط", "نفط", "oil"]:
-        logger.info("🔍 [handle_message] بدء تحليل النفط مباشرة (بدون خيط)")
-        try:
-            handle_analysis("oil", chat_id)
-        except Exception as e:
-            logger.error(f"❌ [handle_message] فشل تحليل النفط: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            queue_telegram_message(f"⚠️ حدث خطأ في تحليل النفط: {str(e)[:100]}", chat_id)
+        logger.info("🔍 [handle_message] بدء تحليل النفط")
+        handle_analysis("oil", chat_id)
         return
     
-    # ── تحليل الفضة (بدون خيط) ──
+    # ── تحليل الفضة ──
     if clean_text in ["🥈 تحليل الفضة", "فضة", "silver"]:
-        logger.info("🔍 [handle_message] بدء تحليل الفضة مباشرة (بدون خيط)")
-        try:
-            handle_analysis("silver", chat_id)
-        except Exception as e:
-            logger.error(f"❌ [handle_message] فشل تحليل الفضة: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            queue_telegram_message(f"⚠️ حدث خطأ في تحليل الفضة: {str(e)[:100]}", chat_id)
+        logger.info("🔍 [handle_message] بدء تحليل الفضة")
+        handle_analysis("silver", chat_id)
         return
     
     # ── وضع الصفقة الحالية ──
@@ -2080,7 +2086,7 @@ def signal_scanner(trading_core: TradingCore):
 
 
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (Main)
+# 📦 PART 11: التشغيل الرئيسي (Main) - المعدل
 # ====================================================================================
 
 def cleanup_stuck_trades(trading_core: TradingCore):
@@ -2163,26 +2169,16 @@ if __name__ == "__main__":
     logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
     logger.info("=" * 60)
     
-    # ── التحقق من المتغيرات البيئية الأساسية ──
+    # ── التحقق من المتغيرات البيئية ──
     if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN غير موجود في المتغيرات البيئية!")
+        logger.error("❌ TELEGRAM_TOKEN غير موجود!")
     else:
         logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
     
     if not CHAT_ID:
-        logger.error("❌ CHAT_ID غير موجود في المتغيرات البيئية!")
+        logger.error("❌ CHAT_ID غير موجود!")
     else:
         logger.info(f"✅ CHAT_ID: {CHAT_ID}")
-    
-    if not GROQ_API_KEY:
-        logger.warning("⚠️ GROQ_API_KEY غير موجود (سيتم استخدام Gemini فقط)")
-    else:
-        logger.info("✅ GROQ_API_KEY موجود")
-    
-    if not GEMINI_API_KEY:
-        logger.warning("⚠️ GEMINI_API_KEY غير موجود (سيتم استخدام Groq فقط)")
-    else:
-        logger.info("✅ GEMINI_API_KEY موجود")
     
     # ── إنشاء المجلدات ──
     os.makedirs("learning_data", exist_ok=True)
@@ -2195,17 +2191,21 @@ if __name__ == "__main__":
     if set_webhook():
         logger.info("✅ Webhook مسجل بنجاح")
     else:
-        logger.warning("⚠️ فشل تسجيل Webhook - سيتم استقبال الرسائل عبر polling (غير مدعوم)")
+        logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
     
-    # ── تشغيل Telegram Sender (يجب أن يكون أولاً) ──
-    sender_thread = threading.Thread(target=telegram_sender, name="Sender", daemon=True)
-    sender_thread.start()
-    logger.info("✅ Thread Sender بدأ - جاهز لإرسال الرسائل")
-    
-    # ── تشغيل Flask في خيط منفصل ──
+    # ── تشغيل Flask ──
     flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
     flask_thread.start()
-    logger.info("🌐 خادم Flask يعمل على المنفذ " + os.environ.get('PORT', '10000'))
+    logger.info("🌐 خادم Flask يعمل")
+    
+    # ── إرسال رسالة تأكيد فورية (بدون خيط) ──
+    if CHAT_ID and TELEGRAM_TOKEN:
+        try:
+            test_msg = "🚀 **Tona AI V2.0** جاهز للعمل!\n\n💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n📌 استخدم الأزرار أو اكتب /start للقائمة."
+            _send_telegram_message_direct(test_msg, CHAT_ID)
+            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
+        except Exception as e:
+            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
     
     # ── تشغيل الماسح (Scanner) ──
     scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
@@ -2216,20 +2216,6 @@ if __name__ == "__main__":
     monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
     monitor_thread.start()
     logger.info("✅ Thread Monitor بدأ")
-    
-    # ── انتظار حتى يستقر Sender وإرسال رسالة تأكيد ──
-    time.sleep(3)
-    if CHAT_ID:
-        try:
-            queue_telegram_message(
-                "🚀 **Tona AI V2.0** جاهز للعمل!\n\n"
-                "💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n"
-                "📌 استخدم الأزرار أو اكتب /start للقائمة.",
-                CHAT_ID
-            )
-            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
-        except Exception as e:
-            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
     
     logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
     logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
