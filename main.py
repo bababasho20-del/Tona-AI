@@ -1006,8 +1006,43 @@ def get_matching_scenarios(indicators: Dict) -> List[Dict]:
     return scenarios[-3:]
 
 # ====================================================================================
-# 📦 PART 06: المدير التنفيذي (فتح وإغلاق الصفقات) - المعدل بالكامل
+# 📦 PART 06: المدير التنفيذي (فتح وإغلاق الصفقات)
 # ====================================================================================
+
+def safe_price(value, default="N/A"):
+    """تحويل القيمة إلى نص منسق برقمين عشريين، مع التعامل مع None"""
+    if value is None:
+        return default
+    try:
+        return f"{float(value):.2f}"
+    except (ValueError, TypeError):
+        return default
+
+class AccountingSystem:
+    """نظام المحاسبة (نفس القديم)"""
+    INITIAL_CAPITAL = 100.0
+    ENTRY_AMOUNT = 1.0
+    LEVERAGE = 200.0
+    
+    @classmethod
+    def calculate_profit_dollars(cls, entry_price, exit_price, trade_type):
+        if entry_price is None or entry_price == 0:
+            return 0.0
+        if trade_type == "BUY":
+            price_change = (exit_price - entry_price) / entry_price
+        else:
+            price_change = (entry_price - exit_price) / entry_price
+        return price_change * cls.ENTRY_AMOUNT * cls.LEVERAGE
+    
+    @classmethod
+    def format_profit(cls, profit_dollars):
+        if profit_dollars is None:
+            return "⚖️ متعادلة: $0.00"
+        if profit_dollars > 0:
+            return f"✅ ربح: +${profit_dollars:.2f}"
+        elif profit_dollars < 0:
+            return f"❌ خسارة: -${abs(profit_dollars):.2f}"
+        return "⚖️ متعادلة: $0.00"
 
 class TradingCore:
     """مدير الصفقات - فتح، إغلاق، مراقبة"""
