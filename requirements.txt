@@ -3,4 +3,4 @@ flask-cors==4.0.0
 requests==2.31.0
 google-generativeai==0.8.6
 gunicorn==21.2.0
-protobuf>=4.21.0
+protobuf==4.25.3
