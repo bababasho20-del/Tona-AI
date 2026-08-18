@@ -2804,7 +2804,7 @@ def safe_price(value, default="N/A"):
         return default
         
 # ====================================================================================
-# 📦 PART 10: بوابة المستخدم (الحل النهائي - مع استخدام globals)
+# 📦 PART 10: بوابة المستخدم (معدل نهائي)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -2818,49 +2818,43 @@ _BACKGROUND_THREADS_STARTED = False
 _BACKGROUND_THREADS_LOCK = threading.Lock()
 
 def start_background_threads():
-    """بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب مع تأخير)"""
+    """
+    بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب)
+    يتم استيراد الدوال محلياً لتجنب NameError
+    """
     global _BACKGROUND_THREADS_STARTED
     with _BACKGROUND_THREADS_LOCK:
         if _BACKGROUND_THREADS_STARTED:
             return
         
-        def _delayed_start():
-            logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
-            try:
-                # ✅ الحصول على الدوال من globals() بدلاً من استيرادها
-                # هذا يضمن أن الدوال قد تم تحميلها بالفعل في النطاق العام
-                signal_scanner = globals().get('signal_scanner')
-                monitor_loop = globals().get('monitor_loop')
-                
-                if signal_scanner is None or monitor_loop is None:
-                    logger.error("❌ لم يتم العثور على signal_scanner أو monitor_loop في globals()")
-                    return
-                
-                scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
-                scanner_thread.start()
-                logger.info("✅ Scanner بدأ بنجاح")
-                
-                monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
-                monitor_thread.start()
-                logger.info("✅ Monitor بدأ بنجاح")
-                
-                global _BACKGROUND_THREADS_STARTED
-                _BACKGROUND_THREADS_STARTED = True
-                logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
-            except Exception as e:
-                logger.error(f"❌ فشل بدء الخيوط الخلفية: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        
-        # بدء Timer بعد 3 ثوانٍ (زيادة الوقت للتأكد من تحميل كل شيء)
-        timer = threading.Timer(3.0, _delayed_start)
-        timer.daemon = True
-        timer.start()
-        logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 3 ثوانٍ")
+        logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
+        try:
+            # ✅ استيراد محلي للدوال من الملف نفسه
+            # هذه الدوال ستكون معرفة عند تنفيذ هذا الكود لأن PART 11 يُحمّل قبل PART 10
+            from main import signal_scanner, monitor_loop
+            
+            scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+            scanner_thread.start()
+            logger.info("✅ Scanner بدأ بنجاح")
+            
+            monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+            monitor_thread.start()
+            logger.info("✅ Monitor بدأ بنجاح")
+            
+            _BACKGROUND_THREADS_STARTED = True
+            logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
+        except ImportError as e:
+            logger.error(f"❌ فشل استيراد الدوال: {e}")
+            logger.error("⚠️ سيتم المحاولة مرة أخرى عند الطلب التالي")
+        except Exception as e:
+            logger.error(f"❌ فشل بدء الخيوط الخلفية: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
 
 @app.route('/')
 def home():
+    # نبدأ الخيوط عند أول طلب (مع تجاهل الأخطاء)
     start_background_threads()
     return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
@@ -3411,6 +3405,247 @@ def safe_price(value, default="N/A"):
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
         return default
+
+# ====================================================================================
+# 📦 PART 11: التشغيل الرئيسي (مع تعريف الدوال واستدعاء start_background_threads)
+# ====================================================================================
+
+import os
+import time
+import threading
+import logging
+from datetime import datetime
+import requests
+
+# ====================================================================================
+# تعريف دوال signal_scanner و monitor_loop هنا (PART 11)
+# ====================================================================================
+
+def signal_scanner(trading_core: TradingCore):
+    """ماسح الإشارات - يعمل كل 60 ثانية"""
+    logger.info("📡 [Scanner] بدأ التشغيل")
+    last_signal_time = {"oil": 0, "silver": 0}
+
+    while True:
+        try:
+            for asset_type in ["oil", "silver"]:
+                if time.time() - last_signal_time[asset_type] < SIGNAL_CHECK_INTERVAL:
+                    continue
+
+                signal_data = generate_raw_signal(asset_type)
+                if signal_data['signal'] == 'WAIT':
+                    continue
+
+                open_trade = get_current_open_trade(asset_type)
+                if open_trade:
+                    trade_type = open_trade.get('type', 'BUY')
+                    if signal_data['signal'] == trade_type:
+                        continue
+                    else:
+                        logger.info(f"🔄 [Scanner] إشارة معاكسة لـ {asset_type}، إغلاق الصفقة الحالية")
+                        trading_core.close_trade(asset_type, f"إشارة معاكسة - عكس الصفقة ({signal_data['signal']})")
+
+                logger.info(f"📡 [Scanner] إشارة {signal_data['signal']} لـ {asset_type} عند ${signal_data['price']:.2f}")
+                trading_core.open_trade(asset_type, signal_data, source="auto")
+                last_signal_time[asset_type] = time.time()
+
+            time.sleep(1)
+        except Exception as e:
+            logger.error(f"❌ [Scanner] خطأ: {e}")
+            time.sleep(5)
+
+
+def monitor_loop(trading_core: TradingCore):
+    """حلقة المراقبة الرئيسية مع التحذيرات المتقدمة"""
+    logger.info("🔄 [Monitor] بدأ التشغيل")
+    while True:
+        try:
+            for asset_type in ["oil", "silver"]:
+                open_trade = get_current_open_trade(asset_type)
+                if not open_trade:
+                    continue
+
+                symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+                data = get_mexc_candles(symbol, "Min1", 10)
+                if not data or not data.get("closes"):
+                    continue
+
+                current_price = data["closes"][-1]
+
+                # التحقق من ضرب SL/TP
+                if check_sl_tp_hit(asset_type, current_price, open_trade, trading_core):
+                    continue
+
+                # جلب التحليل الشامل
+                analysis, _ = perform_comprehensive_analysis(asset_type, data, open_trade)
+                if not analysis:
+                    continue
+
+                # التحذيرات
+                check_distance_warning(asset_type, current_price, open_trade, trading_core.ai_core)
+                check_trend_reversal_warnings(asset_type, analysis, open_trade, trading_core.ai_core)
+                check_memory_warning(asset_type, analysis, open_trade, trading_core.ai_core)
+
+                # حفظ لقطة
+                save_snapshot(asset_type, open_trade, analysis, current_price)
+
+                # تحليل الخطر عبر AI
+                current_data = {
+                    "price": current_price,
+                    "closes": data["closes"],
+                    "highs": data["highs"],
+                    "lows": data["lows"],
+                    "volumes": data["volumes"]
+                }
+                alert = trading_core.ai_core.generate_alert(asset_type, open_trade, current_data)
+                if alert["level"] >= 2:
+                    if "warnings_log" not in open_trade:
+                        open_trade["warnings_log"] = []
+                    open_trade["warnings_log"].append({
+                        "level": alert["level"],
+                        "message": alert["message"],
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    save_current_trade(asset_type, open_trade)
+
+                if alert["level"] == 3:
+                    msg = f"🚨 **تحذير المستوى 3 - {asset_type}**\n{alert['message']}\n💰 السعر الحالي: ${safe_price(current_price)}\n⚠️ سيتم إغلاق الصفقة تلقائياً."
+                    queue_telegram_message(msg)
+                    trading_core.close_trade(asset_type, f"تحذير مستوى 3: {alert['message'][:50]}", current_price)
+                elif alert["level"] == 2:
+                    msg = f"⚠️ **تحذير المستوى 2 - {asset_type}**\n{alert['message']}\n💰 السعر الحالي: ${safe_price(current_price)}"
+                    queue_telegram_message(msg)
+
+            time.sleep(5)
+
+        except Exception as e:
+            logger.error(f"❌ [Monitor] خطأ: {e}")
+            time.sleep(10)
+
+
+# ====================================================================================
+# دوال مساعدة أخرى (cleanup, run_flask, set_webhook)
+# ====================================================================================
+
+def cleanup_stuck_trades(trading_core: TradingCore):
+    logger.info("🧹 بدء تنظيف الصفقات العالقة...")
+    for asset_type in ["oil", "silver"]:
+        open_trade = get_current_open_trade(asset_type)
+        if not open_trade:
+            continue
+        entry_time = open_trade.get('timestamp', '')
+        if entry_time:
+            try:
+                entry_dt = datetime.fromisoformat(entry_time)
+                if (datetime.now() - entry_dt).days >= 2:
+                    logger.info(f"🗑️ إغلاق صفقة عالقة لـ {asset_type} (أكثر من يومين)")
+                    trading_core.close_trade(asset_type, "إغلاق تلقائي (عالقة > 2 يوم)")
+            except Exception as e:
+                logger.error(f"❌ فشل تنظيف {asset_type}: {e}")
+
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
+
+
+def set_webhook() -> bool:
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود")
+        return False
+
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not render_url:
+        service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+        render_url = f"https://{service_name}.onrender.com" if service_name else os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
+        if render_url:
+            render_url = f"https://{render_url}"
+
+    if not render_url:
+        logger.error("❌ RENDER_EXTERNAL_URL غير موجود - لا يمكن تسجيل Webhook")
+        return False
+
+    webhook_url = f"{render_url}/webhook"
+    logger.info(f"🔗 محاولة تسجيل Webhook: {webhook_url}")
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        resp = requests.post(url, json={
+            "url": webhook_url,
+            "allowed_updates": ["message"]
+        }, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('ok', False):
+                logger.info(f"✅ Webhook مسجل بنجاح: {webhook_url}")
+                return True
+            else:
+                logger.error(f"❌ فشل تسجيل Webhook: {data}")
+                return False
+        else:
+            logger.error(f"❌ خطأ في تسجيل Webhook: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ استثناء في تسجيل Webhook: {e}")
+        return False
+
+
+# ====================================================================================
+# نقطة الدخول الرئيسية
+# ====================================================================================
+
+if __name__ == "__main__":
+    logger.info("=" * 60)
+    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي")
+    logger.info("💙 الاسم: Tona AI")
+    logger.info("👨‍💻 المطور: بسام الحوباني")
+    logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
+    logger.info("=" * 60)
+
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود!")
+    else:
+        logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
+
+    if not CHAT_ID:
+        logger.error("❌ CHAT_ID غير موجود!")
+    else:
+        logger.info(f"✅ CHAT_ID: {CHAT_ID}")
+
+    os.makedirs("learning_data", exist_ok=True)
+    os.makedirs("learning_data/backups", exist_ok=True)
+
+    cleanup_stuck_trades(TRADING_CORE)
+
+    if set_webhook():
+        logger.info("✅ Webhook مسجل بنجاح")
+    else:
+        logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
+
+    # ✅ تشغيل خادم Flask
+    flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
+    flask_thread.start()
+    logger.info("🌐 خادم Flask يعمل")
+
+    # ✅ بدء الخيوط الخلفية بعد تعريف جميع الدوال
+    # هذه الدالة موجودة في PART 10 (start_background_threads)
+    start_background_threads()
+
+    # إرسال رسالة تأكيد بدء التشغيل
+    if CHAT_ID and TELEGRAM_TOKEN:
+        try:
+            test_msg = "🚀 **Tona AI V2.0 FINAL** جاهز للعمل!\n\n💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n📌 استخدم الأزرار أو اكتب /start للقائمة."
+            _send_telegram_message_direct(test_msg, CHAT_ID)
+            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
+        except Exception as e:
+            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
+
+    logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
+    logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
+
+    while True:
+        time.sleep(1)
         
 # ====================================================================================
 # 📦 PART 12: التشغيل الرئيسي
