@@ -2877,25 +2877,27 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
 
-    # ✅ تأخير بدء الخيوط الخلفية لمدة 10 ثوانٍ لإعطاء فرصة لفحص الصحة
-    time.sleep(10)
+    # ✅ تأخير بدء الخيوط الخلفية لمدة 30 ثانية لإعطاء فرصة لفحص الصحة
+    logger.info("⏳ انتظار 30 ثانية قبل بدء الخيوط الخلفية...")
+    time.sleep(30)
+    logger.info("✅ انتهى الانتظار، بدء الخيوط الخلفية الآن...")
 
-    # تشغيل ماسح الإشارات (Scanner) مع تأخير
+    # تشغيل ماسح الإشارات (Scanner)
     scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
     scanner_thread.start()
-    logger.info("✅ Thread Scanner بدأ (بعد تأخير 10 ثوانٍ)")
+    logger.info("✅ Thread Scanner بدأ (بعد تأخير 30 ثانية)")
 
-    # تشغيل المراقبة (Monitor) مع تأخير
+    # تشغيل المراقبة (Monitor)
     monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
     monitor_thread.start()
-    logger.info("✅ Thread Monitor بدأ (بعد تأخير 10 ثوانٍ)")
+    logger.info("✅ Thread Monitor بدأ (بعد تأخير 30 ثانية)")
 
     logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
     logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
 
     while True:
         time.sleep(1)
-
+        
 # ====================================================================================
 # 📦 PART 12: التشغيل الرئيسي
 # ====================================================================================
