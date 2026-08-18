@@ -2195,7 +2195,7 @@ def perform_comprehensive_analysis(asset_type: str, data: Dict, open_trade: Opti
 
 
 # ====================================================================================
-# 📦 PART 10: بوابة المستخدم (الأزرار والأوامر فقط)
+# 📦 PART 10: بوابة المستخدم (معدل - مع بدء الخيوط عند أول طلب)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -2204,19 +2204,47 @@ CORS(app)
 AI_CORE = AICore()
 TRADING_CORE = TradingCore(AI_CORE)
 
+# --- متغيرات للتحكم في بدء الخيوط الخلفية ---
+_BACKGROUND_THREADS_STARTED = False
+_BACKGROUND_THREADS_LOCK = threading.Lock()
+
+def start_background_threads():
+    """بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب)"""
+    global _BACKGROUND_THREADS_STARTED
+    with _BACKGROUND_THREADS_LOCK:
+        if _BACKGROUND_THREADS_STARTED:
+            return
+        logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
+        
+        # بدء Scanner
+        scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+        scanner_thread.start()
+        logger.info("✅ Scanner بدأ بنجاح")
+        
+        # بدء Monitor
+        monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+        monitor_thread.start()
+        logger.info("✅ Monitor بدأ بنجاح")
+        
+        _BACKGROUND_THREADS_STARTED = True
+        logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
+
 
 @app.route('/')
 def home():
+    start_background_threads()  # بدء الخيوط عند أول طلب
     return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
 
 @app.route('/ping')
 def ping():
+    start_background_threads()  # بدء الخيوط عند أول طلب
     return "Bot is alive!", 200
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    start_background_threads()  # بدء الخيوط عند أول طلب
     try:
         update = request.get_json()
         if not update or 'message' not in update:
@@ -2341,12 +2369,6 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
 
 
 def handle_analysis(asset_type: str, chat_id: str):
-    """
-    تحليل شامل للأصل المطلوب.
-    ✅ يجمع جميع المؤشرات الفنية ويرسلها إلى النموذج.
-    ✅ يعرض النص التحليلي الذي يولده النموذج مباشرة.
-    ✅ في حال عدم وجود نص تحليلي، يتم إنشاء نص احتياطي من البيانات المتاحة.
-    """
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     try:
         queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
@@ -2374,13 +2396,11 @@ def handle_analysis(asset_type: str, chat_id: str):
         risk = ai_analysis.get('risk_level', 1)
         price = ai_analysis.get('full_analysis', {}).get('price', 0)
 
-        # إذا كان السعر غير متاح، نحاول استخراجه من البيانات الأصلية
         if price == 0 and data and data.get("closes"):
             price = data["closes"][-1]
 
-        # إذا كان النص التحليلي فارغاً، ننشئ نصاً احتياطياً من المؤشرات المتاحة
+        # إذا كان النص التحليلي فارغاً، ننشئ نصاً احتياطياً
         if not analysis_text:
-            # استخراج المؤشرات من full_analysis إن وجدت، وإلا نستخدم القيم المحسوبة
             full = ai_analysis.get('full_analysis', {})
             rsi = full.get('rsi', 50)
             adx = full.get('adx', 20)
@@ -2393,7 +2413,6 @@ def handle_analysis(asset_type: str, chat_id: str):
             support = full.get('indicators', {}).get('support_resistance', {}).get('s1', price * 0.98 if price > 0 else 0)
             resistance = full.get('indicators', {}).get('support_resistance', {}).get('r1', price * 1.02 if price > 0 else 0)
 
-            # بناء النص الاحتياطي
             analysis_text = f"⚠️ لم يتمكن النموذج من توليد تحليل نصي. إليك ملخص المؤشرات:\n"
             analysis_text += f"• السعر: ${price:.2f}\n" if price > 0 else "• السعر: غير متوفر\n"
             analysis_text += f"• RSI: {rsi:.1f}\n"
@@ -2406,14 +2425,12 @@ def handle_analysis(asset_type: str, chat_id: str):
             analysis_text += f"• التقييم العام: {evaluation} ({score}/100)\n"
             analysis_text += "\n💡 يُرجى المحاولة مرة أخرى للحصول على تحليل نصي من النموذج."
 
-        # بناء الرسالة النهائية
         price_str = f"${price:.2f}" if price > 0 else "غير متوفر"
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
         msg += f"💰 السعر: {price_str} | التقييم: {evaluation} ({score}/100) | الخطر: {risk}/3\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg += f"🧠 **تحليل Tona AI:**\n{analysis_text}"
 
-        # إضافة معلومات الصفقة المفتوحة إن وجدت
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
@@ -2765,10 +2782,10 @@ def safe_price(value, default="N/A"):
     try:
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
-        return default        
-
+        return default
+        
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (الحل النهائي - مع تأجيل الاستدعاء)
+# 📦 PART 11: التشغيل الرئيسي (معدل - مع إزالة بدء الخيوط المباشر)
 # ====================================================================================
 
 import os
@@ -2777,30 +2794,6 @@ import threading
 import logging
 from datetime import datetime
 import requests
-
-# --- متغيرات لمنع تكرار بدء الخيوط ---
-_SCANNER_STARTED = False
-_MONITOR_STARTED = False
-_STARTUP_LOCK = threading.Lock()
-
-def start_background_threads():
-    """دالة لبدء الخيوط الخلفية (تتأكد من البدء مرة واحدة فقط)"""
-    global _SCANNER_STARTED, _MONITOR_STARTED
-    with _STARTUP_LOCK:
-        if not _SCANNER_STARTED:
-            logger.info("🔄 بدء تشغيل Scanner...")
-            scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
-            scanner_thread.start()
-            _SCANNER_STARTED = True
-            logger.info("✅ Scanner بدأ بنجاح")
-
-        if not _MONITOR_STARTED:
-            logger.info("🔄 بدء تشغيل Monitor...")
-            monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
-            monitor_thread.start()
-            _MONITOR_STARTED = True
-            logger.info("✅ Monitor بدأ بنجاح")
-
 
 def cleanup_stuck_trades(trading_core: TradingCore):
     logger.info("🧹 بدء تنظيف الصفقات العالقة...")
@@ -2868,7 +2861,7 @@ def set_webhook() -> bool:
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي")
+    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي (بدء الخيوط عند أول طلب)")
     logger.info("💙 الاسم: Tona AI")
     logger.info("👨‍💻 المطور: بسام الحوباني")
     logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
@@ -2894,13 +2887,10 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
 
-    # تشغيل خادم Flask
+    # تشغيل خادم Flask (الخيوط ستبدأ عند أول طلب)
     flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
     flask_thread.start()
-    logger.info("🌐 خادم Flask يعمل")
-
-    # ✅ بدء الخيوط الخلفية بعد تعريف جميع الدوال
-    start_background_threads()
+    logger.info("🌐 خادم Flask يعمل (الخيوط الخلفية ستُبدأ عند أول طلب)")
 
     # إرسال رسالة تأكيد بدء التشغيل
     if CHAT_ID and TELEGRAM_TOKEN:
@@ -2911,7 +2901,7 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
 
-    logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
+    logger.info("✅ الخادم يعمل - انتظر أول طلب لبدء الخيوط الخلفية.")
     logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
 
     while True:
