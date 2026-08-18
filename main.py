@@ -2341,6 +2341,12 @@ def analyze_timeframes(asset_type: str) -> Dict[str, str]:
 
 
 def handle_analysis(asset_type: str, chat_id: str):
+    """
+    تحليل شامل للأصل المطلوب.
+    ✅ يجمع جميع المؤشرات الفنية ويرسلها إلى النموذج.
+    ✅ يعرض النص التحليلي الذي يولده النموذج مباشرة.
+    ✅ سطر عنوان مختصر: السعر، التقييم، الدرجة، مستوى الخطر.
+    """
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     try:
         queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
@@ -2354,103 +2360,32 @@ def handle_analysis(asset_type: str, chat_id: str):
             queue_telegram_message(f"⚠️ تعذر جلب بيانات {'النفط' if asset_type == 'oil' else 'الفضة'}", chat_id)
             return
 
-        closes = data["closes"]
-        price = closes[-1]
-
-        rsi_values = calculate_rsi_7(closes)
-        rsi = rsi_values[-1] if rsi_values else 50
-
-        macd_line, signal_line, hist = calculate_macd_full(closes)
-        macd = hist[-1] if hist else 0
-
-        adx = calculate_adx_14(data) or 20
-
-        atr = calculate_atr_14(data) or 0
-        atr_pct = (atr / price * 100) if price > 0 and atr else 0
-
-        timeframes_trends = analyze_timeframes(asset_type)
-
         open_trade = get_current_open_trade(asset_type)
         ai_analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
 
+        if 'error' in ai_analysis:
+            queue_telegram_message(f"⚠️ {ai_analysis['error']}", chat_id)
+            return
+
         asset_label = "النفط" if asset_type == "oil" else "الفضة"
-
-        evaluation = ai_analysis.get('evaluation', 'متوسط')
+        analysis_text = ai_analysis.get('ai_analysis_text', '')
         score = ai_analysis.get('score', 50)
-        risk_level = ai_analysis.get('risk_level', 1)
-        reasons = ai_analysis.get('reasons', [])
-        advice = ai_analysis.get('advice', '')
+        evaluation = ai_analysis.get('evaluation', 'متوسط')
+        risk = ai_analysis.get('risk_level', 1)
+        price = ai_analysis.get('full_analysis', {}).get('price', 0)
 
-        if score < 10:
-            score = 50
-            evaluation = "متوسط"
-
+        # بناء الرسالة النهائية: سطر عنوان مختصر + النص التحليلي فقط
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"💰 **السعر الحالي:** ${safe_price(price)}\n"
-        msg += f"📈 **التقييم:** {evaluation}\n"
-        msg += f"📊 **الدرجة:** {score}/100\n"
-        msg += f"⚠️ **مستوى الخطر:** {risk_level}/3\n"
+        msg += f"💰 السعر: ${safe_price(price)} | التقييم: {evaluation} ({score}/100) | الخطر: {risk}/3\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg += f"🧠 **تحليل Tona AI:**\n{analysis_text}"
 
-        msg += "🕐 **تحليل الفريمات الزمنية:**\n"
-        msg += f"   • 5 دقائق: {timeframes_trends.get('5m', 'محايد ⚪')}\n"
-        msg += f"   • 15 دقيقة: {timeframes_trends.get('15m', 'محايد ⚪')}\n"
-        msg += f"   • ساعة: {timeframes_trends.get('1h', 'محايد ⚪')}\n"
-        msg += f"   • 4 ساعات: {timeframes_trends.get('4h', 'محايد ⚪')}\n"
-        msg += "\n"
-
-        msg += "📊 **المؤشرات الفنية:**\n"
-        msg += f"   • RSI (7): {rsi:.1f}\n"
-        msg += f"   • ADX (14): {adx:.1f}\n"
-        msg += f"   • MACD Histogram: {macd:.4f}\n"
-        msg += f"   • ATR: ${atr:.4f} ({atr_pct:.2f}%)\n"
-        msg += "\n"
-
-        msg += "📋 **الأسباب:**\n"
-        if reasons and len(reasons) > 0 and reasons[0] != "لا توجد أسباب محددة":
-            for reason in reasons[:4]:
-                msg += f"   • {reason}\n"
-        else:
-            if rsi > 70:
-                msg += f"   • RSI في منطقة ذروة شراء ({rsi:.1f})\n"
-            elif rsi < 30:
-                msg += f"   • RSI في منطقة ذروة بيع ({rsi:.1f})\n"
-            else:
-                msg += f"   • RSI محايد ({rsi:.1f})\n"
-
-            if adx > 25:
-                msg += f"   • ADX يشير إلى اتجاه قوي ({adx:.1f})\n"
-            else:
-                msg += f"   • ADX ضعيف ({adx:.1f}) - سوق عرضي\n"
-
-            bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
-            bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
-            if bullish >= 3:
-                msg += f"   • {bullish}/4 فريمات صاعدة - اتجاه صاعد قوي\n"
-            elif bearish >= 3:
-                msg += f"   • {bearish}/4 فريمات هابطة - اتجاه هابط قوي\n"
-            else:
-                msg += f"   • {bullish} صاعدة / {bearish} هابطة - سوق متذبذب\n"
-
-        if advice and advice != "لا توجد نصيحة محددة":
-            msg += f"\n💡 **نصيحة Tona AI:**\n{advice}\n"
-        else:
-            msg += "\n💡 **نصيحة Tona AI:**\n"
-            bullish = sum(1 for v in timeframes_trends.values() if "صاعد" in v)
-            bearish = sum(1 for v in timeframes_trends.values() if "هابط" in v)
-            if bullish >= 3 and rsi < 70:
-                msg += "الاتجاه العام صاعد، يمكن النظر في صفقات شراء مع إدارة المخاطر.\n"
-            elif bearish >= 3 and rsi > 30:
-                msg += "الاتجاه العام هابط، يمكن النظر في صفقات بيع أو الانتظار.\n"
-            else:
-                msg += "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة.\n"
-
+        # إضافة معلومات الصفقة المفتوحة إن وجدت (مع الحفاظ على التنسيق نفسه)
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
             profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
-            msg += f"\n📈 **الصفقة المفتوحة:** {trade_type} @ ${safe_price(entry)} | {profit_pct:+.2f}%"
+            msg += f"\n\n📈 **الصفقة المفتوحة:** {trade_type} @ ${safe_price(entry)} | {profit_pct:+.2f}%"
             msg += f"\n🛡️ وقف الخسارة: ${safe_price(open_trade.get('sl'))}"
             msg += f"\n🎯 الهدف: ${safe_price(open_trade.get('tp'))}"
 
@@ -2798,7 +2733,7 @@ def safe_price(value, default="N/A"):
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
         return default
-
+        
 
 # ====================================================================================
 # 📦 PART 11: ماسح الإشارات (Scanner)
