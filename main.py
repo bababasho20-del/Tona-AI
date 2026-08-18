@@ -2768,8 +2768,44 @@ def safe_price(value, default="N/A"):
         return default        
 
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (معدل - مع تأخير بدء الخيوط)
+# 📦 PART 11: التشغيل الرئيسي (الحل النهائي - مع بدء الخيوط بشكل صحيح)
 # ====================================================================================
+
+import os
+import time
+import threading
+import logging
+from datetime import datetime
+import requests
+
+# --- يتم نقل بدء الخيوط إلى هنا (خارج if __name__) ---
+# للتأكد من أن الخيوط تبدأ مرة واحدة فقط، نستخدم متغيراً عاماً وقفلاً
+_SCANNER_STARTED = False
+_MONITOR_STARTED = False
+_STARTUP_LOCK = threading.Lock()
+
+def start_background_threads():
+    """دالة لبدء الخيوط الخلفية (تتأكد من البدء مرة واحدة فقط)"""
+    global _SCANNER_STARTED, _MONITOR_STARTED
+    with _STARTUP_LOCK:
+        if not _SCANNER_STARTED:
+            logger.info("🔄 بدء تشغيل Scanner...")
+            scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+            scanner_thread.start()
+            _SCANNER_STARTED = True
+            logger.info("✅ Scanner بدأ بنجاح")
+
+        if not _MONITOR_STARTED:
+            logger.info("🔄 بدء تشغيل Monitor...")
+            monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+            monitor_thread.start()
+            _MONITOR_STARTED = True
+            logger.info("✅ Monitor بدأ بنجاح")
+
+# --- يتم استدعاء الدالة مباشرة عند تحميل الملف ---
+# هذا يضمن أن الخيوط تبدأ فوراً، ولا تعتمد على if __name__ == "__main__"
+start_background_threads()
+
 
 def cleanup_stuck_trades(trading_core: TradingCore):
     logger.info("🧹 بدء تنظيف الصفقات العالقة...")
@@ -2876,21 +2912,6 @@ if __name__ == "__main__":
             logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
         except Exception as e:
             logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
-
-    # ✅ تأخير بدء الخيوط الخلفية لمدة 30 ثانية لإعطاء فرصة لفحص الصحة
-    logger.info("⏳ انتظار 30 ثانية قبل بدء الخيوط الخلفية...")
-    time.sleep(30)
-    logger.info("✅ انتهى الانتظار، بدء الخيوط الخلفية الآن...")
-
-    # تشغيل ماسح الإشارات (Scanner)
-    scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
-    scanner_thread.start()
-    logger.info("✅ Thread Scanner بدأ (بعد تأخير 30 ثانية)")
-
-    # تشغيل المراقبة (Monitor)
-    monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
-    monitor_thread.start()
-    logger.info("✅ Thread Monitor بدأ (بعد تأخير 30 ثانية)")
 
     logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
     logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
