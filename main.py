@@ -535,7 +535,175 @@ def generate_raw_signal(asset_type: str) -> Dict:
 
 
 # ====================================================================================
-# 📦 PART 04: نواة الذكاء الاصطناعي (AICore) - مع زيادة المهلة وإعادة المحاولة
+# 📦 PART 04: نواة الذكاء الاصطناعي (AICore) - مع دالة التقييم الشامل
+# ====================================================================================
+
+# ============================================================================
+# دالة calculate_comprehensive_score (من البوت الأصلي PART 16)
+# ============================================================================
+
+def calculate_comprehensive_score(analysis: Dict, asset_type: str, open_trade: Optional[Dict] = None) -> Dict:
+    """
+    حساب التقييم الشامل - نسخة معدلة من PART 16
+    """
+    if not analysis or not isinstance(analysis, dict):
+        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+
+    price = analysis.get('price', 0)
+    if price <= 0:
+        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+
+    indicators = analysis.get('indicators', {})
+    if not indicators:
+        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+
+    # استخراج البيانات مع تحقق
+    trend_data = indicators.get('trend', {})
+    bullish_count = trend_data.get('bullish_count', 0) or 0
+    adx = trend_data.get('adx', 20) or 20
+
+    momentum = indicators.get('momentum', {})
+    rsi = momentum.get('rsi', 50) or 50
+    macd_hist = momentum.get('macd_hist', 0) or 0
+    stoch = momentum.get('stoch', 50) or 50
+
+    volatility = indicators.get('volatility', {})
+    bb_pos = volatility.get('bb_position', 0.5) or 0.5
+    atr_pct = volatility.get('atr_percent', 1.0) or 1.0
+    vwap_dev = volatility.get('vwap_deviation', 0) or 0
+
+    volume = indicators.get('volume', {})
+    vol_ratio = volume.get('ratio', 1.0) or 1.0
+
+    sr = indicators.get('support_resistance', {})
+    s1 = sr.get('s1', price * 0.98) or (price * 0.98)
+    r1 = sr.get('r1', price * 1.02) or (price * 1.02)
+    pivot = sr.get('pivot', price) or price
+
+    sentiment = indicators.get('sentiment', {})
+    fear_greed = sentiment.get('fear_greed', 50) or 50
+
+    # حساب الدرجات الفرعية
+    trend_score = 65 if bullish_count >= 2 and adx > 25 else 55 if bullish_count >= 2 else 45 if adx > 25 else 35
+    if adx is None: adx = 20
+
+    if rsi < 30:
+        momentum_score = 70
+    elif rsi > 70:
+        momentum_score = 30
+    elif 40 <= rsi <= 60 and abs(macd_hist) < 0.3:
+        momentum_score = 50
+    elif rsi < 40:
+        momentum_score = 40
+    else:
+        momentum_score = 60
+
+    volatility_score = 50
+    if atr_pct > 2.5:
+        volatility_score = 60
+    elif atr_pct < 0.5:
+        volatility_score = 40
+    if bb_pos < 0.15:
+        volatility_score = min(volatility_score + 10, 65)
+    elif bb_pos > 0.85:
+        volatility_score = max(volatility_score - 10, 35)
+
+    volume_score = 65 if vol_ratio >= 1.5 else 55 if vol_ratio >= 1.0 else 45 if vol_ratio >= 0.6 else 35
+    if vol_ratio is None: vol_ratio = 1.0
+
+    sr_score = 65 if price <= s1 * 1.003 else 35 if price >= r1 * 0.997 else 50
+    if price is None: price = 0
+
+    sentiment_score = 75 if fear_greed <= 20 else 65 if fear_greed <= 35 else 50 if fear_greed <= 55 else 35 if fear_greed <= 75 else 25
+    if fear_greed is None: fear_greed = 50
+
+    divergence_score = 50  # بدون تباعد
+
+    # أوزان
+    weights = {
+        'trend': 0.25,
+        'momentum': 0.20,
+        'volatility': 0.15,
+        'volume': 0.15,
+        'sr': 0.15,
+        'sentiment': 0.05,
+        'divergence': 0.05
+    }
+    total_weight = sum(weights.values())
+    if total_weight != 1.0:
+        weights = {k: v/total_weight for k, v in weights.items()}
+
+    final_score = (
+        trend_score * weights['trend'] +
+        momentum_score * weights['momentum'] +
+        volatility_score * weights['volatility'] +
+        volume_score * weights['volume'] +
+        sr_score * weights['sr'] +
+        sentiment_score * weights['sentiment'] +
+        divergence_score * weights['divergence']
+    )
+    final_score = round(final_score, 2)
+
+    if final_score >= 70:
+        grade = "إيجابي قوي"
+        grade_emoji = "🟢"
+        context = "bullish"
+    elif final_score >= 60:
+        grade = "إيجابي"
+        grade_emoji = "🟡"
+        context = "bullish"
+    elif final_score >= 45:
+        grade = "محايد"
+        grade_emoji = "⚪"
+        context = "neutral"
+    elif final_score >= 35:
+        grade = "سلبي"
+        grade_emoji = "🟠"
+        context = "bearish"
+    else:
+        grade = "سلبي قوي"
+        grade_emoji = "🔴"
+        context = "bearish"
+
+    details = [
+        f"📈 الاتجاه: درجة {trend_score:.0f}",
+        f"⚡ الزخم: درجة {momentum_score:.0f}",
+        f"🌊 التقلب: درجة {volatility_score:.0f}",
+        f"📊 الحجم: درجة {volume_score:.0f}",
+        f"🛡️ الدعم/المقاومة: درجة {sr_score:.0f}",
+        f"🧠 المشاعر: درجة {sentiment_score:.0f}"
+    ]
+
+    if open_trade:
+        trade_type = open_trade.get('type', 'unknown')
+        entry_price = open_trade.get('entry_price', 0)
+        if entry_price > 0:
+            pnl = ((price - entry_price) / entry_price * 100) if trade_type == 'BUY' else ((entry_price - price) / entry_price * 100)
+            details.append(f"💼 الصفقة المفتوحة: {trade_type} | {pnl:+.2f}%")
+
+    return {
+        "score": final_score,
+        "grade": grade,
+        "grade_emoji": grade_emoji,
+        "details": details,
+        "context": context,
+        "metrics": {
+            "price": price,
+            "rsi": rsi,
+            "adx": adx,
+            "vol_ratio": vol_ratio,
+            "fear_greed": fear_greed,
+            "bullish_count": bullish_count,
+            "support": s1,
+            "resistance": r1,
+            "atr_percent": atr_pct,
+            "bb_position": bb_pos
+        }
+    }
+
+
+# ====================================================================================
+# كلاس AICore
 # ====================================================================================
 
 class AICore:
@@ -1082,8 +1250,7 @@ class AICore:
         response = self._call_model(prompt, max_tokens=500)
         if response:
             return response
-        return "تعذر توليد التقرير الاستخباراتي حالياً."   
-
+        return "تعذر توليد التقرير الاستخباراتي حالياً."
 
 # ====================================================================================
 # 📦 PART 05: نواة الذكاء الاصطناعي (AICore) - مع احتياطي قوي
