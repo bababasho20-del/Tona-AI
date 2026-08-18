@@ -2751,7 +2751,7 @@ def perform_comprehensive_analysis(asset_type: str, data: Dict, open_trade: Opti
 
         
 # ====================================================================================
-# 📦 PART 10: بوابة المستخدم (معدل نهائي)
+# 📦 PART 10: بوابة المستخدم (كامل - مع تحسين استدعاء الخيوط)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -2766,18 +2766,18 @@ _BACKGROUND_THREADS_LOCK = threading.Lock()
 
 def start_background_threads():
     """
-    بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب)
+    بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب أو فوراً)
     يتم استيراد الدوال محلياً لتجنب NameError
     """
     global _BACKGROUND_THREADS_STARTED
     with _BACKGROUND_THREADS_LOCK:
         if _BACKGROUND_THREADS_STARTED:
+            logger.info("ℹ️ الخيوط الخلفية تعمل بالفعل، تخطي")
             return
         
-        logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
+        logger.info("🔄 بدء تشغيل الخيوط الخلفية (محاولة)...")
         try:
             # ✅ استيراد محلي للدوال من الملف نفسه
-            # هذه الدوال ستكون معرفة عند تنفيذ هذا الكود لأن PART 11 يُحمّل قبل PART 10
             from main import signal_scanner, monitor_loop
             
             scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
@@ -2801,19 +2801,21 @@ def start_background_threads():
 
 @app.route('/')
 def home():
-    # نبدأ الخيوط عند أول طلب (مع تجاهل الأخطاء)
+    # ✅ محاولة بدء الخيوط عند أول طلب (آمنة)
     start_background_threads()
     return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
 
 @app.route('/ping')
 def ping():
+    # ✅ محاولة بدء الخيوط عند طلب الصحة (آمنة)
     start_background_threads()
     return "Bot is alive!", 200
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    # ✅ محاولة بدء الخيوط عند أي طلب (آمنة)
     start_background_threads()
     try:
         update = request.get_json()
@@ -3352,9 +3354,9 @@ def safe_price(value, default="N/A"):
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
         return default
-
+        
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (معدل - مع تأخير بدء الخيوط)
+# 📦 PART 11: التشغيل الرئيسي (كامل - مع استدعاء start_background_threads فوراً)
 # ====================================================================================
 
 import os
@@ -3527,7 +3529,17 @@ def set_webhook() -> bool:
 
 
 # ====================================================================================
-# نقطة الدخول الرئيسية (المعدلة)
+# ✅ بدء الخيوط الخلفية فوراً (خارج if __name__)
+# هذا يضمن تشغيلها في بيئة Gunicorn/Render
+# ====================================================================================
+
+logger.info("🔄 بدء تشغيل الخيوط الخلفية فوراً (من PART 11)...")
+start_background_threads()
+logger.info("✅ تم استدعاء start_background_threads() بنجاح من PART 11")
+
+
+# ====================================================================================
+# نقطة الدخول الرئيسية (للتشغيل المحلي فقط)
 # ====================================================================================
 
 if __name__ == "__main__":
@@ -3558,21 +3570,9 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
 
-    # ✅ تشغيل خادم Flask في الخيط الرئيسي
+    # ✅ تشغيل خادم Flask (في الخيط الرئيسي)
     port = int(os.environ.get('PORT', 10000))
-    logger.info("🌐 بدء تشغيل خادم Flask...")
-
-    # ✅ تأخير بدء الخيوط الخلفية لمدة 15 ثانية لإعطاء فرصة لفحص الصحة
-    def delayed_start():
-        logger.info("⏳ بدء تشغيل الخيوط الخلفية بعد التأخير...")
-        start_background_threads()
-
-    timer = threading.Timer(15.0, delayed_start)
-    timer.daemon = True
-    timer.start()
-    logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 15 ثانية")
-
-    # ✅ تشغيل Flask (هذا يمنع الخروج)
+    logger.info("🌐 تشغيل خادم Flask على المنفذ %s", port)
     app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
     
 # ====================================================================================
