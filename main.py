@@ -535,165 +535,554 @@ def generate_raw_signal(asset_type: str) -> Dict:
 
 
 # ====================================================================================
-# 📦 PART 04: حساب التقييم الشامل (Comprehensive Score) من البوت الأصلي
+# 📦 PART 04: نواة الذكاء الاصطناعي (AICore) - مع زيادة المهلة وإعادة المحاولة
 # ====================================================================================
 
-def calculate_comprehensive_score(analysis: Dict, asset_type: str, open_trade: Optional[Dict] = None) -> Dict:
-    """حساب التقييم الشامل - نسخة معدلة من PART 16"""
-    if not analysis or not isinstance(analysis, dict):
-        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+class AICore:
+    """المحرك الذكي للبوت - مع منطق احتياطي قوي"""
 
-    price = analysis.get('price', 0)
-    if price <= 0:
-        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+    def __init__(self):
+        self.gemini_model = None
+        self.groq_model = "openai/gpt-oss-120b"
 
-    indicators = analysis.get('indicators', {})
-    if not indicators:
-        return {"score": 50, "grade": "محايد", "grade_emoji": "⚪", "details": [], "context": "neutral"}
+        if GEMINI_AVAILABLE and GEMINI_API_KEY:
+            try:
+                genai.configure(api_key=GEMINI_API_KEY)
+                self.gemini_model = genai.GenerativeModel('gemini-3.5-flash')
+                logger.info("✅ Gemini 3.5 Flash جاهز")
+            except Exception as e:
+                logger.error(f"❌ فشل تهيئة Gemini: {e}")
+        else:
+            logger.warning("⚠️ Gemini غير متوفر (تحقق من GEMINI_API_KEY)")
 
-    # استخراج البيانات مع تحقق
-    trend_data = indicators.get('trend', {})
-    bullish_count = trend_data.get('bullish_count', 0) or 0
-    adx = trend_data.get('adx', 20) or 20
+        if GROQ_API_KEY:
+            logger.info("✅ Groq API جاهز")
+        else:
+            logger.warning("⚠️ Groq API غير متوفر (تحقق من GROQ_API_KEY)")
 
-    momentum = indicators.get('momentum', {})
-    rsi = momentum.get('rsi', 50) or 50
-    macd_hist = momentum.get('macd_hist', 0) or 0
-    stoch = momentum.get('stoch', 50) or 50
+    def _call_gemini(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """استدعاء Gemini مع زيادة المهلة وإعادة المحاولة"""
+        if not self.gemini_model:
+            logger.warning("⚠️ Gemini غير متوفر، تخطي الاستدعاء")
+            return None
+        
+        for attempt in range(3):
+            try:
+                logger.info(f"🔄 محاولة Gemini {attempt+1}/3...")
+                response = self.gemini_model.generate_content(
+                    prompt,
+                    generation_config={"max_output_tokens": max_tokens, "temperature": 0.3}
+                )
+                if response and response.text:
+                    text = response.text.strip()
+                    logger.info(f"✅ Gemini رد (طول: {len(text)})")
+                    return text
+                else:
+                    logger.warning(f"⚠️ Gemini رد فارغ (محاولة {attempt+1})")
+            except Exception as e:
+                logger.error(f"❌ Gemini فشل (محاولة {attempt+1}): {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        return None
 
-    volatility = indicators.get('volatility', {})
-    bb_pos = volatility.get('bb_position', 0.5) or 0.5
-    atr_pct = volatility.get('atr_percent', 1.0) or 1.0
-    vwap_dev = volatility.get('vwap_deviation', 0) or 0
+    def _call_groq(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """استدعاء Groq مع زيادة المهلة وإعادة المحاولة"""
+        if not GROQ_API_KEY:
+            logger.warning("⚠️ Groq API غير متوفر، تخطي الاستدعاء")
+            return None
+        
+        for attempt in range(3):
+            try:
+                logger.info(f"🔄 محاولة Groq {attempt+1}/3...")
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": self.groq_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                    "top_p": 0.9
+                }
+                # ✅ زيادة المهلة إلى 30 ثانية
+                resp = requests.post(url, headers=headers, json=payload, timeout=30)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    if content:
+                        logger.info(f"✅ Groq رد (طول: {len(content)})")
+                        return content.strip()
+                    else:
+                        logger.warning(f"⚠️ Groq رد فارغ (محاولة {attempt+1})")
+                else:
+                    logger.warning(f"⚠️ Groq خطأ {resp.status_code} (محاولة {attempt+1})")
+            except requests.exceptions.Timeout:
+                logger.error(f"❌ Groq مهلة (محاولة {attempt+1})")
+            except Exception as e:
+                logger.error(f"❌ Groq فشل (محاولة {attempt+1}): {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+        return None
 
-    volume = indicators.get('volume', {})
-    vol_ratio = volume.get('ratio', 1.0) or 1.0
+    def _call_model(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """استدعاء النماذج مع احتياطي"""
+        logger.info("🧠 محاولة استدعاء النماذج...")
+        
+        # ✅ المحاولة الأولى: Gemini
+        response = self._call_gemini(prompt, max_tokens)
+        if response:
+            return response
+        
+        # ✅ المحاولة الثانية: Groq
+        response = self._call_groq(prompt, max_tokens)
+        if response:
+            return response
+        
+        logger.error("❌ كلا النموذجين فشلا بعد 3 محاولات لكل منهما")
+        return None
 
-    sr = indicators.get('support_resistance', {})
-    s1 = sr.get('s1', price * 0.98) or (price * 0.98)
-    r1 = sr.get('r1', price * 1.02) or (price * 1.02)
-    pivot = sr.get('pivot', price) or price
+    def analyze_market(self, asset: str, data: Dict, open_trade: Optional[Dict] = None) -> Dict:
+        """تحليل شامل للسوق باستخدام AI + احتياطي رياضي"""
+        closes = data.get("closes", [])
+        if not closes:
+            return {"error": "لا توجد بيانات"}
 
-    sentiment = indicators.get('sentiment', {})
-    fear_greed = sentiment.get('fear_greed', 50) or 50
+        price = closes[-1]
 
-    # حساب الدرجات الفرعية
-    trend_score = 65 if bullish_count >= 2 and adx > 25 else 55 if bullish_count >= 2 else 45 if adx > 25 else 35
-    if adx is None: adx = 20
+        # حساب المؤشرات الرياضية
+        rsi_values = calculate_rsi_7(closes)
+        rsi = rsi_values[-1] if rsi_values else 50
 
-    if rsi < 30:
-        momentum_score = 70
-    elif rsi > 70:
-        momentum_score = 30
-    elif 40 <= rsi <= 60 and abs(macd_hist) < 0.3:
-        momentum_score = 50
-    elif rsi < 40:
-        momentum_score = 40
-    else:
-        momentum_score = 60
+        macd_line, sig_line, hist = calculate_macd_full(closes)
+        macd = hist[-1] if hist else 0
 
-    volatility_score = 50
-    if atr_pct > 2.5:
-        volatility_score = 60
-    elif atr_pct < 0.5:
-        volatility_score = 40
-    if bb_pos < 0.15:
-        volatility_score = min(volatility_score + 10, 65)
-    elif bb_pos > 0.85:
-        volatility_score = max(volatility_score - 10, 35)
+        adx = calculate_adx_14(data) or 20
 
-    volume_score = 65 if vol_ratio >= 1.5 else 55 if vol_ratio >= 1.0 else 45 if vol_ratio >= 0.6 else 35
-    if vol_ratio is None: vol_ratio = 1.0
+        # تحليل الفريمات
+        timeframes = {}
+        for tf, interval in [("5m", "Min5"), ("15m", "Min15"), ("1h", "Min60"), ("4h", "Hour4")]:
+            tf_data = get_mexc_candles("USOIL_USDT" if asset == "oil" else "SILVER_USDT", interval, 100)
+            if tf_data and tf_data.get("closes"):
+                st_result = calculate_supertrend_vpt_correct(tf_data, st_mult=2.5 if asset == "oil" else 2.2)
+                if st_result:
+                    _, trend, _ = st_result
+                    timeframes[tf] = "صاعد" if trend[-1] == 1 else "هابط" if trend[-1] == -1 else "محايد"
+                else:
+                    tf_closes = tf_data["closes"]
+                    if len(tf_closes) >= 20:
+                        sma_short = sum(tf_closes[-5:]) / 5
+                        sma_long = sum(tf_closes[-20:]) / 20
+                        if sma_short > sma_long * 1.003:
+                            timeframes[tf] = "صاعد"
+                        elif sma_short < sma_long * 0.997:
+                            timeframes[tf] = "هابط"
+                        else:
+                            timeframes[tf] = "محايد"
+                    else:
+                        timeframes[tf] = "محايد"
+            else:
+                timeframes[tf] = "محايد"
 
-    sr_score = 65 if price <= s1 * 1.003 else 35 if price >= r1 * 0.997 else 50
-    if price is None: price = 0
+        bullish_count = sum(1 for t in timeframes.values() if t == "صاعد")
+        bearish_count = sum(1 for t in timeframes.values() if t == "هابط")
+        total_frames = len(timeframes)
 
-    sentiment_score = 75 if fear_greed <= 20 else 65 if fear_greed <= 35 else 50 if fear_greed <= 55 else 35 if fear_greed <= 75 else 25
-    if fear_greed is None: fear_greed = 50
-
-    divergence_score = 50  # بدون تباعد
-
-    # أوزان
-    weights = {
-        'trend': 0.25,
-        'momentum': 0.20,
-        'volatility': 0.15,
-        'volume': 0.15,
-        'sr': 0.15,
-        'sentiment': 0.05,
-        'divergence': 0.05
-    }
-    total_weight = sum(weights.values())
-    if total_weight != 1.0:
-        weights = {k: v/total_weight for k, v in weights.items()}
-
-    final_score = (
-        trend_score * weights['trend'] +
-        momentum_score * weights['momentum'] +
-        volatility_score * weights['volatility'] +
-        volume_score * weights['volume'] +
-        sr_score * weights['sr'] +
-        sentiment_score * weights['sentiment'] +
-        divergence_score * weights['divergence']
-    )
-    final_score = round(final_score, 2)
-
-    if final_score >= 70:
-        grade = "إيجابي قوي"
-        grade_emoji = "🟢"
-        context = "bullish"
-    elif final_score >= 60:
-        grade = "إيجابي"
-        grade_emoji = "🟡"
-        context = "bullish"
-    elif final_score >= 45:
-        grade = "محايد"
-        grade_emoji = "⚪"
-        context = "neutral"
-    elif final_score >= 35:
-        grade = "سلبي"
-        grade_emoji = "🟠"
-        context = "bearish"
-    else:
-        grade = "سلبي قوي"
-        grade_emoji = "🔴"
-        context = "bearish"
-
-    details = [
-        f"📈 الاتجاه: درجة {trend_score:.0f}",
-        f"⚡ الزخم: درجة {momentum_score:.0f}",
-        f"🌊 التقلب: درجة {volatility_score:.0f}",
-        f"📊 الحجم: درجة {volume_score:.0f}",
-        f"🛡️ الدعم/المقاومة: درجة {sr_score:.0f}",
-        f"🧠 المشاعر: درجة {sentiment_score:.0f}"
-    ]
-
-    if open_trade:
-        trade_type = open_trade.get('type', 'unknown')
-        entry_price = open_trade.get('entry_price', 0)
-        if entry_price > 0:
-            pnl = ((price - entry_price) / entry_price * 100) if trade_type == 'BUY' else ((entry_price - price) / entry_price * 100)
-            details.append(f"💼 الصفقة المفتوحة: {trade_type} | {pnl:+.2f}%")
-
-    return {
-        "score": final_score,
-        "grade": grade,
-        "grade_emoji": grade_emoji,
-        "details": details,
-        "context": context,
-        "metrics": {
+        # بناء كامل للتحليل (مثل البوت الأصلي)
+        analysis = {
             "price": price,
-            "rsi": rsi,
-            "adx": adx,
-            "vol_ratio": vol_ratio,
-            "fear_greed": fear_greed,
-            "bullish_count": bullish_count,
-            "support": s1,
-            "resistance": r1,
-            "atr_percent": atr_pct,
-            "bb_position": bb_pos
+            "asset": asset,
+            "indicators": {
+                "trend": {
+                    "bullish_count": bullish_count,
+                    "adx": adx,
+                    "current_trend": "صاعد" if bullish_count >= 3 else "هابط" if bearish_count >= 3 else "محايد"
+                },
+                "momentum": {
+                    "rsi": rsi,
+                    "macd_hist": macd,
+                    "stoch": 50
+                },
+                "volatility": {
+                    "atr_percent": 1.0,
+                    "bb_position": 0.5,
+                    "vwap_deviation": 0
+                },
+                "volume": {
+                    "ratio": 1.0
+                },
+                "support_resistance": {
+                    "s1": price * 0.98,
+                    "r1": price * 1.02,
+                    "pivot": price
+                },
+                "sentiment": {
+                    "fear_greed": 50
+                }
+            },
+            "timeframes": {tf: {"trend": v} for tf, v in timeframes.items()}
         }
-    }
+
+        # حساب التقييم الشامل الرياضي
+        comp_score = calculate_comprehensive_score(analysis, asset, open_trade)
+
+        # بناء الـ Prompt لـ AI
+        prompt = f"""أنت خبير تحليل أسواق مالية متخصص في النفط والفضة. قم بتحليل السوق التالي وأجب بالصيغة المطلوبة فقط.
+
+═══════════════════════════════════════
+📊 بيانات السوق:
+═══════════════════════════════════════
+• الأصل: {asset}
+• السعر الحالي: ${price:.2f}
+• RSI (7): {rsi:.1f}
+• ADX (14): {adx:.1f}
+• MACD Histogram: {macd:.4f}
+• الفريمات الصاعدة: {bullish_count}/{total_frames}
+• الفريمات الهابطة: {bearish_count}/{total_frames}
+• التقييم الرياضي: {comp_score['score']:.0f}% ({comp_score['grade']})
+
+═══════════════════════════════════════
+المطلوب (أجب بالصيغة التالية فقط):
+═══════════════════════════════════════
+التقييم: [ممتاز/جيد/متوسط/ضعيف/سيئ]
+الدرجة: [0-100]
+الأسباب: [3 أسباب على الأقل، مفصولة بفواصل]
+نصيحة: [نصيحة مختصرة]
+مستوى الخطر: [1/2/3]  (1=منخفض، 2=متوسط، 3=مرتفع)
+"""
+
+        if open_trade:
+            entry = open_trade.get('entry_price', 0)
+            trade_type = open_trade.get('type', 'BUY')
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+            prompt += f"\n• الصفقة المفتوحة: {trade_type} | {profit_pct:+.2f}%"
+
+        response = self._call_model(prompt, max_tokens=400)
+
+        # بناء النتيجة مع الاحتياطي الرياضي
+        result = {
+            "evaluation": comp_score['grade'],
+            "score": comp_score['score'],
+            "reasons": comp_score['details'][:3] if comp_score['details'] else [],
+            "advice": "",
+            "risk_level": 1,
+            "comprehensive": comp_score,
+            "full_analysis": analysis
+        }
+
+        if response:
+            eval_match = re.search(r'التقييم:\s*(.+)', response)
+            if eval_match:
+                result["evaluation"] = eval_match.group(1).strip()
+
+            score_match = re.search(r'الدرجة:\s*(\d+)', response)
+            if score_match:
+                try:
+                    result["score"] = min(100, max(0, int(score_match.group(1))))
+                except:
+                    pass
+
+            reasons_match = re.search(r'الأسباب:\s*(.+)', response, re.DOTALL)
+            if reasons_match:
+                reasons_text = reasons_match.group(1).strip()
+                reasons = [r.strip() for r in re.split(r'[،،,]', reasons_text) if r.strip()]
+                if reasons:
+                    result["reasons"] = reasons[:5]
+
+            advice_match = re.search(r'نصيحة:\s*(.+)', response)
+            if advice_match:
+                result["advice"] = advice_match.group(1).strip()
+
+            risk_match = re.search(r'مستوى الخطر:\s*(\d+)', response)
+            if risk_match:
+                try:
+                    result["risk_level"] = min(3, max(1, int(risk_match.group(1))))
+                except:
+                    pass
+
+            result["ai_analysis_text"] = response.strip()
+
+        # تأكد من وجود أسباب ونصيحة
+        if not result["reasons"]:
+            result["reasons"] = comp_score['details'][:3] if comp_score['details'] else [f"RSI: {rsi:.1f}", f"ADX: {adx:.1f}", f"{bullish_count}/{total_frames} صاعدة"]
+        if not result["advice"]:
+            if bullish_count >= 3:
+                result["advice"] = "الاتجاه العام صاعد، فكر في صفقات شراء مع إدارة المخاطر."
+            elif bearish_count >= 3:
+                result["advice"] = "الاتجاه العام هابط، فكر في صفقات بيع أو الانتظار."
+            else:
+                result["advice"] = "السوق في حالة تذبذب، انتظر حتى تظهر إشارة واضحة."
+
+        # إذا لم يكن هناك رد من النموذج، ننشئ نصاً احتياطياً
+        if not result.get("ai_analysis_text"):
+            result["ai_analysis_text"] = self._generate_fallback_analysis(analysis, comp_score)
+
+        logger.info(f"✅ تحليل {asset}: score={result['score']}, risk={result['risk_level']}")
+        return result
+
+    def _generate_fallback_analysis(self, analysis: Dict, comp_score: Dict) -> str:
+        """توليد تحليل احتياطي في حال فشل النموذج"""
+        price = analysis.get('price', 0)
+        rsi = analysis.get('indicators', {}).get('momentum', {}).get('rsi', 50)
+        adx = analysis.get('indicators', {}).get('trend', {}).get('adx', 20)
+        macd = analysis.get('indicators', {}).get('momentum', {}).get('macd_hist', 0)
+        timeframes = analysis.get('timeframes', {})
+        bullish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'صاعد')
+        bearish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'هابط')
+        support = analysis.get('indicators', {}).get('support_resistance', {}).get('s1', price * 0.98 if price > 0 else 0)
+        resistance = analysis.get('indicators', {}).get('support_resistance', {}).get('r1', price * 1.02 if price > 0 else 0)
+
+        text = f"⚠️ لم يتمكن النموذج من توليد تحليل نصي. إليك ملخص المؤشرات:\n"
+        text += f"• السعر: ${price:.2f}\n" if price > 0 else "• السعر: غير متوفر\n"
+        text += f"• RSI: {rsi:.1f}\n"
+        text += f"• ADX: {adx:.1f}\n"
+        text += f"• MACD: {macd:.4f}\n"
+        text += f"• الفريمات: {bullish} صاعدة / {bearish} هابطة\n"
+        if support > 0 and resistance > 0:
+            text += f"• الدعم: ${support:.2f} | المقاومة: ${resistance:.2f}\n"
+        text += f"• التقييم العام: {comp_score['grade']} ({comp_score['score']:.0f}/100)\n"
+        text += "\n💡 يُرجى المحاولة مرة أخرى للحصول على تحليل نصي من النموذج."
+
+        return text
+
+    def generate_alert(self, asset: str, open_trade: Dict, current_data: Dict) -> Dict:
+        """تحليل الخطر للصفقة المفتوحة باستخدام AI + منطق رياضي"""
+        price = current_data.get("price", 0)
+        if not price:
+            return {"level": 1, "message": "لا توجد بيانات", "action": "notify"}
+
+        entry = open_trade.get('entry_price', 0)
+        trade_type = open_trade.get('type', 'BUY')
+        sl = open_trade.get('sl', 0)
+        tp = open_trade.get('tp', 0)
+        if entry > 0:
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+        else:
+            profit_pct = 0
+
+        closes = current_data.get("closes", [])
+        rsi_val = calculate_rsi_7(closes)
+        rsi_val = rsi_val[-1] if rsi_val else 50
+        macd_line, sig_line, hist = calculate_macd_full(closes)
+        macd_val = hist[-1] if hist else 0
+        atr = calculate_atr_14(current_data) or 0
+
+        # حساب المسافات إلى SL و TP
+        dist_to_sl = 0
+        dist_to_tp = 0
+        if sl > 0 and entry > 0:
+            if trade_type == "BUY":
+                dist_to_sl = (price - sl) / entry * 100
+                dist_to_tp = (tp - price) / entry * 100 if tp > 0 else 0
+            else:
+                dist_to_sl = (sl - price) / entry * 100
+                dist_to_tp = (price - tp) / entry * 100 if tp > 0 else 0
+
+        # حساب المستوى رياضيًا (منطق البوت الأصلي)
+        level = 1
+        if dist_to_sl < 0.5:
+            level = 3
+        elif dist_to_sl < 1.0:
+            level = 2
+        elif abs(profit_pct) > 5:
+            level = 2
+        elif (trade_type == "BUY" and rsi_val > 70) or (trade_type == "SELL" and rsi_val < 30):
+            level = 2
+
+        # استدعاء AI لصياغة الرسالة
+        prompt = f"""أنت خبير إدارة مخاطر. قم بكتابة رسالة تحذيرية مختصرة للصفقة التالية.
+
+═══════════════════════════════════════
+📊 بيانات الصفقة:
+═══════════════════════════════════════
+• الأصل: {asset}
+• النوع: {trade_type}
+• سعر الدخول: ${entry:.2f}
+• السعر الحالي: ${price:.2f}
+• الربح/الخسارة: {profit_pct:+.2f}%
+• المسافة إلى SL: {dist_to_sl:.2f}%
+• المسافة إلى TP: {dist_to_tp:.2f}%
+• RSI: {rsi_val:.1f}
+• MACD: {macd_val:.4f}
+• ATR: ${atr:.2f} ({atr/price*100 if price > 0 else 0:.2f}%)
+
+═══════════════════════════════════════
+مستوى الخطر المحسوب: {level}/3
+
+المطلوب:
+اكتب رسالة تحذيرية مختصرة (لا تتجاوز سطرين) توضح سبب الخطر والإجراء المناسب.
+"""
+
+        response = self._call_model(prompt, max_tokens=150)
+        if response:
+            message = response.strip()
+        else:
+            # رسائل احتياطية من البوت الأصلي
+            if level == 3:
+                message = f"🚨 خطر داهم! الصفقة قريبة جداً من وقف الخسارة ({dist_to_sl:.1f}%). أنصح بالإغلاق فوراً."
+            elif level == 2:
+                message = f"⚠️ خطر متوسط. راقب الصفقة عن كثب، قد تحتاج للإغلاق قريباً."
+            else:
+                message = "🟢 الخطر منخفض، استمر في مراقبة الصفقة."
+
+        action = "close" if level == 3 else "notify"
+        return {"level": level, "message": message, "action": action}
+
+    def extract_deep_lesson(self, trade_data: Dict, market_context: str) -> Dict:
+        """استخلاص درس عميق وسيناريو باستخدام AI + احتياطي"""
+        entry_price = trade_data.get('entry_price', 0) or 0
+        exit_price = trade_data.get('exit_price', 0) or 0
+        profit = trade_data.get('profit_dollars', 0) or 0
+
+        prompt = f"""أنت خبير تعلم آلي في الأسواق المالية. قم بتحليل الصفقة التالية واستخلص درساً وسيناريو.
+
+═══════════════════════════════════════
+📊 بيانات الصفقة:
+═══════════════════════════════════════
+• الأصل: {trade_data.get('asset', 'unknown')}
+• النوع: {trade_data.get('type', 'UNKNOWN')}
+• سعر الدخول: ${entry_price:.2f}
+• سعر الخروج: ${exit_price:.2f}
+• الربح/الخسارة: ${profit:.2f}
+• سبب الإغلاق: {trade_data.get('exit_reason', 'غير معروف')}
+• مدة الصفقة: {trade_data.get('duration_minutes', 0)} دقيقة
+
+📊 المؤشرات عند الدخول:
+   • RSI: {trade_data.get('entry_rsi', 'N/A')}
+   • ADX: {trade_data.get('entry_adx', 'N/A')}
+   • MACD: {trade_data.get('entry_macd', 'N/A')}
+   • الاتجاه: {trade_data.get('entry_trend', 'N/A')}
+
+📊 المؤشرات عند الخروج:
+   • RSI: {trade_data.get('exit_rsi', 'N/A')}
+   • ADX: {trade_data.get('exit_adx', 'N/A')}
+   • MACD: {trade_data.get('exit_macd', 'N/A')}
+   • الاتجاه: {trade_data.get('exit_trend', 'N/A')}
+
+═══════════════════════════════════════
+سياق السوق الحالي:
+═══════════════════════════════════════
+{market_context}
+
+═══════════════════════════════════════
+المطلوب (أجب بالصيغة التالية فقط):
+═══════════════════════════════════════
+الدرس: [جملة واحدة مختصرة]
+السيناريو: [وصف الظروف التي أدت إلى هذه النتيجة]
+الشرط: [شرط مستقبلي للتعرف على هذا السيناريو]
+النصيحة: [نصيحة للمستقبل]
+"""
+
+        response = self._call_model(prompt, max_tokens=400)
+        if not response:
+            # احتياطي قوي
+            if profit > 0:
+                lesson = "الصفقات الرابحة تحدث عندما تتوافق المؤشرات مع الاتجاه العام."
+                scenario = "ارتفع السعر بعد الدخول بفضل زخم صاعد قوي."
+                condition = "RSI > 50 و ADX > 25 و الاتجاه صاعد."
+                advice = "استمر في استخدام هذه الشروط للدخول."
+            else:
+                lesson = "الصفقات الخاسرة تحدث عندما تتعارض المؤشرات مع الاتجاه العام."
+                scenario = "انعكس السعر بعد الدخول بسبب ضعف الزخم."
+                condition = "RSI < 50 أو ADX < 20 أو الاتجاه هابط."
+                advice = "تجنب الدخول عندما تكون المؤشرات ضعيفة."
+            return {"lesson": lesson, "scenario": scenario, "condition": condition, "advice": advice}
+
+        result = {}
+        lesson_match = re.search(r'الدرس:\s*(.+)', response)
+        result["lesson"] = lesson_match.group(1).strip() if lesson_match else "درس غير معروف"
+        scenario_match = re.search(r'السيناريو:\s*(.+)', response)
+        result["scenario"] = scenario_match.group(1).strip() if scenario_match else ""
+        condition_match = re.search(r'الشرط:\s*(.+)', response)
+        result["condition"] = condition_match.group(1).strip() if condition_match else ""
+        advice_match = re.search(r'النصيحة:\s*(.+)', response)
+        result["advice"] = advice_match.group(1).strip() if advice_match else ""
+
+        return result
+
+    def update_market_profile(self, asset: str, recent_trades: List[Dict]) -> str:
+        """تحديث وصف شخصية السوق باستخدام AI + احتياطي"""
+        if not recent_trades:
+            return "لا توجد بيانات كافية لتحديث شخصية السوق"
+
+        trades_summary = ""
+        for i, trade in enumerate(recent_trades[-10:], 1):
+            profit = trade.get('profit_dollars', 0) or 0
+            entry = trade.get('entry_price', 0) or 0
+            exit_p = trade.get('exit_price', 0) or 0
+            trades_summary += f"{i}. {trade.get('type')} @ ${entry:.2f} → ${exit_p:.2f} | {profit:+.2f}$ | {trade.get('exit_reason', '')}\n"
+
+        prompt = f"""أنت خبير تحليل أسواق. قم بتحليل سلوك سوق {asset} بناءً على آخر الصفقات واكتب وصفاً مختصراً.
+
+═══════════════════════════════════════
+آخر الصفقات:
+═══════════════════════════════════════
+{trades_summary}
+
+═══════════════════════════════════════
+المطلوب:
+═══════════════════════════════════════
+اكتب فقرة واحدة (لا تتجاوز 100 كلمة) تصف فيها:
+1. الاتجاه العام للسوق حالياً.
+2. مستوى التقلب.
+3. أي أنماط لاحظتها.
+4. توقعاتك العامة للفترة القادمة.
+
+أجب بنص عادي فقط، بدون تنسيق أو عناوين.
+"""
+
+        response = self._call_model(prompt, max_tokens=300)
+        if response:
+            return response.strip()
+        return "تعذر تحديث شخصية السوق حالياً."
+
+    def generate_intelligence_report(self, asset: str, trades: List[Dict], market_profile: str) -> str:
+        """توليد تقرير استخباراتي باستخدام AI + احتياطي"""
+        if not trades:
+            return "لا توجد بيانات كافية لتوليد تقرير استخباراتي"
+
+        closed_trades = [t for t in trades if t.get('status') == 'closed']
+        if not closed_trades:
+            return "لا توجد صفقات مغلقة لتوليد التقرير"
+
+        wins = [t for t in closed_trades if (t.get('profit_dollars', 0) or 0) > 0]
+        losses = [t for t in closed_trades if (t.get('profit_dollars', 0) or 0) <= 0]
+        win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
+        total_profit = sum((t.get('profit_dollars', 0) or 0) for t in closed_trades)
+
+        prompt = f"""أنت خبير استخبارات مالية. قم بتوليد تقرير استخباراتي شامل عن سوق {asset}.
+
+═══════════════════════════════════════
+إحصائيات الأداء:
+═══════════════════════════════════════
+• إجمالي الصفقات المغلقة: {len(closed_trades)}
+• الصفقات الرابحة: {len(wins)}
+• الصفقات الخاسرة: {len(losses)}
+• نسبة النجاح: {win_rate:.1f}%
+• إجمالي الربح: ${total_profit:.2f}
+
+═══════════════════════════════════════
+شخصية السوق الحالية:
+═══════════════════════════════════════
+{market_profile}
+
+═══════════════════════════════════════
+المطلوب:
+═══════════════════════════════════════
+اكتب تقريراً استخباراتياً موجزاً (150-200 كلمة) يحتوي على:
+1. تحليل أداء السوق.
+2. نقاط القوة والضعف.
+3. توقعات للفترة القادمة.
+4. نصائح استراتيجية للمتداول.
+
+أجب بنص عادي، مع عناوين فرعية إن لزم.
+"""
+
+        response = self._call_model(prompt, max_tokens=500)
+        if response:
+            return response
+        return "تعذر توليد التقرير الاستخباراتي حالياً."   
 
 
 # ====================================================================================
