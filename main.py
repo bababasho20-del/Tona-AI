@@ -2768,41 +2768,133 @@ def safe_price(value, default="N/A"):
         return default        
 
 # ====================================================================================
-# 📦 PART 11: ماسح الإشارات (Scanner)
+# 📦 PART 11: التشغيل الرئيسي (معدل - مع تأخير بدء الخيوط)
 # ====================================================================================
 
-def signal_scanner(trading_core: TradingCore):
-    logger.info("📡 [Scanner] بدأ التشغيل")
-    last_signal_time = {"oil": 0, "silver": 0}
+def cleanup_stuck_trades(trading_core: TradingCore):
+    logger.info("🧹 بدء تنظيف الصفقات العالقة...")
+    for asset_type in ["oil", "silver"]:
+        open_trade = get_current_open_trade(asset_type)
+        if not open_trade:
+            continue
+        entry_time = open_trade.get('timestamp', '')
+        if entry_time:
+            try:
+                entry_dt = datetime.fromisoformat(entry_time)
+                if (datetime.now() - entry_dt).days >= 2:
+                    logger.info(f"🗑️ إغلاق صفقة عالقة لـ {asset_type} (أكثر من يومين)")
+                    trading_core.close_trade(asset_type, "إغلاق تلقائي (عالقة > 2 يوم)")
+            except Exception as e:
+                logger.error(f"❌ فشل تنظيف {asset_type}: {e}")
+
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
+
+
+def set_webhook() -> bool:
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود")
+        return False
+
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not render_url:
+        service_name = os.environ.get('RENDER_SERVICE_NAME', '')
+        render_url = f"https://{service_name}.onrender.com" if service_name else os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
+        if render_url:
+            render_url = f"https://{render_url}"
+
+    if not render_url:
+        logger.error("❌ RENDER_EXTERNAL_URL غير موجود - لا يمكن تسجيل Webhook")
+        return False
+
+    webhook_url = f"{render_url}/webhook"
+    logger.info(f"🔗 محاولة تسجيل Webhook: {webhook_url}")
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        resp = requests.post(url, json={
+            "url": webhook_url,
+            "allowed_updates": ["message"]
+        }, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('ok', False):
+                logger.info(f"✅ Webhook مسجل بنجاح: {webhook_url}")
+                return True
+            else:
+                logger.error(f"❌ فشل تسجيل Webhook: {data}")
+                return False
+        else:
+            logger.error(f"❌ خطأ في تسجيل Webhook: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ استثناء في تسجيل Webhook: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    logger.info("=" * 60)
+    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي")
+    logger.info("💙 الاسم: Tona AI")
+    logger.info("👨‍💻 المطور: بسام الحوباني")
+    logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
+    logger.info("=" * 60)
+
+    if not TELEGRAM_TOKEN:
+        logger.error("❌ TELEGRAM_TOKEN غير موجود!")
+    else:
+        logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
+
+    if not CHAT_ID:
+        logger.error("❌ CHAT_ID غير موجود!")
+    else:
+        logger.info(f"✅ CHAT_ID: {CHAT_ID}")
+
+    os.makedirs("learning_data", exist_ok=True)
+    os.makedirs("learning_data/backups", exist_ok=True)
+
+    cleanup_stuck_trades(TRADING_CORE)
+
+    if set_webhook():
+        logger.info("✅ Webhook مسجل بنجاح")
+    else:
+        logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
+
+    # تشغيل خادم Flask
+    flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
+    flask_thread.start()
+    logger.info("🌐 خادم Flask يعمل")
+
+    # إرسال رسالة تأكيد بدء التشغيل
+    if CHAT_ID and TELEGRAM_TOKEN:
+        try:
+            test_msg = "🚀 **Tona AI V2.0 FINAL** جاهز للعمل!\n\n💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n📌 استخدم الأزرار أو اكتب /start للقائمة."
+            _send_telegram_message_direct(test_msg, CHAT_ID)
+            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
+        except Exception as e:
+            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
+
+    # ✅ تأخير بدء الخيوط الخلفية لمدة 10 ثوانٍ لإعطاء فرصة لفحص الصحة
+    time.sleep(10)
+
+    # تشغيل ماسح الإشارات (Scanner) مع تأخير
+    scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+    scanner_thread.start()
+    logger.info("✅ Thread Scanner بدأ (بعد تأخير 10 ثوانٍ)")
+
+    # تشغيل المراقبة (Monitor) مع تأخير
+    monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+    monitor_thread.start()
+    logger.info("✅ Thread Monitor بدأ (بعد تأخير 10 ثوانٍ)")
+
+    logger.info("✅ جميع الخيوط تعمل - Tona AI جاهز!")
+    logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
 
     while True:
-        try:
-            for asset_type in ["oil", "silver"]:
-                if time.time() - last_signal_time[asset_type] < SIGNAL_CHECK_INTERVAL:
-                    continue
-
-                signal_data = generate_raw_signal(asset_type)
-                if signal_data['signal'] == 'WAIT':
-                    continue
-
-                open_trade = get_current_open_trade(asset_type)
-                if open_trade:
-                    trade_type = open_trade.get('type', 'BUY')
-                    if signal_data['signal'] == trade_type:
-                        continue
-                    else:
-                        logger.info(f"🔄 [Scanner] إشارة معاكسة لـ {asset_type}، إغلاق الصفقة الحالية")
-                        trading_core.close_trade(asset_type, f"إشارة معاكسة - عكس الصفقة ({signal_data['signal']})")
-
-                logger.info(f"📡 [Scanner] إشارة {signal_data['signal']} لـ {asset_type} عند ${signal_data['price']:.2f}")
-                trading_core.open_trade(asset_type, signal_data, source="auto")
-                last_signal_time[asset_type] = time.time()
-
-            time.sleep(1)
-        except Exception as e:
-            logger.error(f"❌ [Scanner] خطأ: {e}")
-            time.sleep(5)
-
+        time.sleep(1)
 
 # ====================================================================================
 # 📦 PART 12: التشغيل الرئيسي
