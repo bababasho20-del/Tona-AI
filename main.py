@@ -2768,7 +2768,7 @@ def safe_price(value, default="N/A"):
         return default        
 
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (الحل النهائي - مع بدء الخيوط بشكل صحيح)
+# 📦 PART 11: التشغيل الرئيسي (الحل النهائي - مع تأجيل الاستدعاء)
 # ====================================================================================
 
 import os
@@ -2778,8 +2778,7 @@ import logging
 from datetime import datetime
 import requests
 
-# --- يتم نقل بدء الخيوط إلى هنا (خارج if __name__) ---
-# للتأكد من أن الخيوط تبدأ مرة واحدة فقط، نستخدم متغيراً عاماً وقفلاً
+# --- متغيرات لمنع تكرار بدء الخيوط ---
 _SCANNER_STARTED = False
 _MONITOR_STARTED = False
 _STARTUP_LOCK = threading.Lock()
@@ -2801,10 +2800,6 @@ def start_background_threads():
             monitor_thread.start()
             _MONITOR_STARTED = True
             logger.info("✅ Monitor بدأ بنجاح")
-
-# --- يتم استدعاء الدالة مباشرة عند تحميل الملف ---
-# هذا يضمن أن الخيوط تبدأ فوراً، ولا تعتمد على if __name__ == "__main__"
-start_background_threads()
 
 
 def cleanup_stuck_trades(trading_core: TradingCore):
@@ -2903,6 +2898,9 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
     flask_thread.start()
     logger.info("🌐 خادم Flask يعمل")
+
+    # ✅ بدء الخيوط الخلفية بعد تعريف جميع الدوال
+    start_background_threads()
 
     # إرسال رسالة تأكيد بدء التشغيل
     if CHAT_ID and TELEGRAM_TOKEN:
