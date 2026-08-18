@@ -2345,7 +2345,7 @@ def handle_analysis(asset_type: str, chat_id: str):
     تحليل شامل للأصل المطلوب.
     ✅ يجمع جميع المؤشرات الفنية ويرسلها إلى النموذج.
     ✅ يعرض النص التحليلي الذي يولده النموذج مباشرة.
-    ✅ سطر عنوان مختصر: السعر، التقييم، الدرجة، مستوى الخطر.
+    ✅ في حال عدم وجود نص تحليلي، يتم إنشاء نص احتياطي من البيانات المتاحة.
     """
     logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
     try:
@@ -2374,17 +2374,50 @@ def handle_analysis(asset_type: str, chat_id: str):
         risk = ai_analysis.get('risk_level', 1)
         price = ai_analysis.get('full_analysis', {}).get('price', 0)
 
-        # بناء الرسالة النهائية: سطر عنوان مختصر + النص التحليلي فقط
+        # إذا كان السعر غير متاح، نحاول استخراجه من البيانات الأصلية
+        if price == 0 and data and data.get("closes"):
+            price = data["closes"][-1]
+
+        # إذا كان النص التحليلي فارغاً، ننشئ نصاً احتياطياً من المؤشرات المتاحة
+        if not analysis_text:
+            # استخراج المؤشرات من full_analysis إن وجدت، وإلا نستخدم القيم المحسوبة
+            full = ai_analysis.get('full_analysis', {})
+            rsi = full.get('rsi', 50)
+            adx = full.get('adx', 20)
+            macd = full.get('macd', 0)
+            atr = full.get('atr', 0)
+            atr_pct = (atr / price * 100) if price > 0 else 0
+            timeframes = full.get('timeframes', {})
+            bullish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'صاعد')
+            bearish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'هابط')
+            support = full.get('indicators', {}).get('support_resistance', {}).get('s1', price * 0.98 if price > 0 else 0)
+            resistance = full.get('indicators', {}).get('support_resistance', {}).get('r1', price * 1.02 if price > 0 else 0)
+
+            # بناء النص الاحتياطي
+            analysis_text = f"⚠️ لم يتمكن النموذج من توليد تحليل نصي. إليك ملخص المؤشرات:\n"
+            analysis_text += f"• السعر: ${price:.2f}\n" if price > 0 else "• السعر: غير متوفر\n"
+            analysis_text += f"• RSI: {rsi:.1f}\n"
+            analysis_text += f"• ADX: {adx:.1f}\n"
+            analysis_text += f"• MACD: {macd:.4f}\n"
+            analysis_text += f"• ATR: ${atr:.2f} ({atr_pct:.2f}%)\n"
+            analysis_text += f"• الفريمات: {bullish} صاعدة / {bearish} هابطة\n"
+            if support > 0 and resistance > 0:
+                analysis_text += f"• الدعم: ${support:.2f} | المقاومة: ${resistance:.2f}\n"
+            analysis_text += f"• التقييم العام: {evaluation} ({score}/100)\n"
+            analysis_text += "\n💡 يُرجى المحاولة مرة أخرى للحصول على تحليل نصي من النموذج."
+
+        # بناء الرسالة النهائية
+        price_str = f"${price:.2f}" if price > 0 else "غير متوفر"
         msg = f"📊 **تحليل {asset_label} الشامل**\n"
-        msg += f"💰 السعر: ${safe_price(price)} | التقييم: {evaluation} ({score}/100) | الخطر: {risk}/3\n"
+        msg += f"💰 السعر: {price_str} | التقييم: {evaluation} ({score}/100) | الخطر: {risk}/3\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg += f"🧠 **تحليل Tona AI:**\n{analysis_text}"
 
-        # إضافة معلومات الصفقة المفتوحة إن وجدت (مع الحفاظ على التنسيق نفسه)
+        # إضافة معلومات الصفقة المفتوحة إن وجدت
         if open_trade:
             entry = open_trade.get('entry_price', 0)
             trade_type = open_trade.get('type', 'BUY')
-            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" else ((entry - price) / entry * 100)
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" and entry > 0 else ((entry - price) / entry * 100) if entry > 0 else 0
             msg += f"\n\n📈 **الصفقة المفتوحة:** {trade_type} @ ${safe_price(entry)} | {profit_pct:+.2f}%"
             msg += f"\n🛡️ وقف الخسارة: ${safe_price(open_trade.get('sl'))}"
             msg += f"\n🎯 الهدف: ${safe_price(open_trade.get('tp'))}"
@@ -2732,8 +2765,7 @@ def safe_price(value, default="N/A"):
     try:
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
-        return default
-        
+        return default        
 
 # ====================================================================================
 # 📦 PART 11: ماسح الإشارات (Scanner)
