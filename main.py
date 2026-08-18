@@ -2195,7 +2195,7 @@ def perform_comprehensive_analysis(asset_type: str, data: Dict, open_trade: Opti
 
 
 # ====================================================================================
-# 📦 PART 10: بوابة المستخدم (معدل - مع تأخير بدء الخيوط)
+# 📦 PART 10: بوابة المستخدم (الحل النهائي - مع استخدام globals)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -2215,13 +2215,17 @@ def start_background_threads():
         if _BACKGROUND_THREADS_STARTED:
             return
         
-        # ✅ استخدام Timer لتأخير بدء الخيوط لمدة 2 ثانية
-        # هذا يضمن تحميل جميع الدوال (signal_scanner, monitor_loop) قبل البدء
         def _delayed_start():
             logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
             try:
-                # استيراد الدوال محلياً لتجنب NameError
-                from main import signal_scanner, monitor_loop
+                # ✅ الحصول على الدوال من globals() بدلاً من استيرادها
+                # هذا يضمن أن الدوال قد تم تحميلها بالفعل في النطاق العام
+                signal_scanner = globals().get('signal_scanner')
+                monitor_loop = globals().get('monitor_loop')
+                
+                if signal_scanner is None or monitor_loop is None:
+                    logger.error("❌ لم يتم العثور على signal_scanner أو monitor_loop في globals()")
+                    return
                 
                 scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
                 scanner_thread.start()
@@ -2236,29 +2240,31 @@ def start_background_threads():
                 logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
             except Exception as e:
                 logger.error(f"❌ فشل بدء الخيوط الخلفية: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
-        # بدء Timer بعد 2 ثانية
-        timer = threading.Timer(2.0, _delayed_start)
+        # بدء Timer بعد 3 ثوانٍ (زيادة الوقت للتأكد من تحميل كل شيء)
+        timer = threading.Timer(3.0, _delayed_start)
         timer.daemon = True
         timer.start()
-        logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 2 ثانية")
+        logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 3 ثوانٍ")
 
 
 @app.route('/')
 def home():
-    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
+    start_background_threads()
     return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
 
 @app.route('/ping')
 def ping():
-    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
+    start_background_threads()
     return "Bot is alive!", 200
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
+    start_background_threads()
     try:
         update = request.get_json()
         if not update or 'message' not in update:
@@ -2795,130 +2801,616 @@ def safe_price(value, default="N/A"):
     try:
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
-        return default  
+        return default
         
 # ====================================================================================
-# 📦 PART 11: التشغيل الرئيسي (معدل - مع إزالة بدء الخيوط المباشر)
+# 📦 PART 10: بوابة المستخدم (الحل النهائي - مع استخدام globals)
 # ====================================================================================
 
-import os
-import time
-import threading
-import logging
-from datetime import datetime
-import requests
+app = Flask(__name__)
+CORS(app)
 
-def cleanup_stuck_trades(trading_core: TradingCore):
-    logger.info("🧹 بدء تنظيف الصفقات العالقة...")
-    for asset_type in ["oil", "silver"]:
-        open_trade = get_current_open_trade(asset_type)
-        if not open_trade:
-            continue
-        entry_time = open_trade.get('timestamp', '')
-        if entry_time:
+AI_CORE = AICore()
+TRADING_CORE = TradingCore(AI_CORE)
+
+# --- متغيرات للتحكم في بدء الخيوط الخلفية ---
+_BACKGROUND_THREADS_STARTED = False
+_BACKGROUND_THREADS_LOCK = threading.Lock()
+
+def start_background_threads():
+    """بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب مع تأخير)"""
+    global _BACKGROUND_THREADS_STARTED
+    with _BACKGROUND_THREADS_LOCK:
+        if _BACKGROUND_THREADS_STARTED:
+            return
+        
+        def _delayed_start():
+            logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
             try:
-                entry_dt = datetime.fromisoformat(entry_time)
-                if (datetime.now() - entry_dt).days >= 2:
-                    logger.info(f"🗑️ إغلاق صفقة عالقة لـ {asset_type} (أكثر من يومين)")
-                    trading_core.close_trade(asset_type, "إغلاق تلقائي (عالقة > 2 يوم)")
+                # ✅ الحصول على الدوال من globals() بدلاً من استيرادها
+                # هذا يضمن أن الدوال قد تم تحميلها بالفعل في النطاق العام
+                signal_scanner = globals().get('signal_scanner')
+                monitor_loop = globals().get('monitor_loop')
+                
+                if signal_scanner is None or monitor_loop is None:
+                    logger.error("❌ لم يتم العثور على signal_scanner أو monitor_loop في globals()")
+                    return
+                
+                scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+                scanner_thread.start()
+                logger.info("✅ Scanner بدأ بنجاح")
+                
+                monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+                monitor_thread.start()
+                logger.info("✅ Monitor بدأ بنجاح")
+                
+                global _BACKGROUND_THREADS_STARTED
+                _BACKGROUND_THREADS_STARTED = True
+                logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
             except Exception as e:
-                logger.error(f"❌ فشل تنظيف {asset_type}: {e}")
+                logger.error(f"❌ فشل بدء الخيوط الخلفية: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # بدء Timer بعد 3 ثوانٍ (زيادة الوقت للتأكد من تحميل كل شيء)
+        timer = threading.Timer(3.0, _delayed_start)
+        timer.daemon = True
+        timer.start()
+        logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 3 ثوانٍ")
 
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+@app.route('/')
+def home():
+    start_background_threads()
+    return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
 
-def set_webhook() -> bool:
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN غير موجود")
+@app.route('/ping')
+def ping():
+    start_background_threads()
+    return "Bot is alive!", 200
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    start_background_threads()
+    try:
+        update = request.get_json()
+        if not update or 'message' not in update:
+            return 'OK', 200
+
+        message = update['message']
+        text = message.get('text', '').strip()
+        chat_id = str(message['from']['id'])
+
+        if text:
+            handle_message(text, chat_id)
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"❌ Webhook خطأ: {e}")
+        return 'OK', 200
+
+
+def _send_telegram_message_direct(text: str, chat_id: str) -> bool:
+    if not TELEGRAM_TOKEN or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        resp = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=15)
+        return resp.status_code == 200
+    except Exception as e:
+        logger.error(f"❌ استثناء في الإرسال: {e}")
         return False
 
-    render_url = os.environ.get('RENDER_EXTERNAL_URL', '')
-    if not render_url:
-        service_name = os.environ.get('RENDER_SERVICE_NAME', '')
-        render_url = f"https://{service_name}.onrender.com" if service_name else os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
-        if render_url:
-            render_url = f"https://{render_url}"
 
-    if not render_url:
-        logger.error("❌ RENDER_EXTERNAL_URL غير موجود - لا يمكن تسجيل Webhook")
+def queue_telegram_message(text: str, chat_id: str = None):
+    if not text or text.strip() == "":
         return False
+    target = chat_id or CHAT_ID
+    if not target:
+        return False
+    if len(text) > 4096:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            _send_telegram_message_direct(part, target)
+        return True
+    return _send_telegram_message_direct(text, target)
 
-    webhook_url = f"{render_url}/webhook"
-    logger.info(f"🔗 محاولة تسجيل Webhook: {webhook_url}")
+
+def send_main_menu(chat_id: str):
+    keyboard = [
+        ["🛢️ تحليل النفط", "🥈 تحليل الفضة"],
+        ["🔍 وضع الصفقة الحالية", "📊 تقرير الأداء"],
+        ["📌 فتح صفقة يدوياً", "🧠 تقرير التعلم العميق"],
+        ["📰 تقرير استخباراتي", "❌ إغلاق الصفقة"]
+    ]
+
+    oil_open = get_current_open_trade("oil")
+    silver_open = get_current_open_trade("silver")
+    if oil_open or silver_open:
+        close_row = []
+        if oil_open:
+            close_row.append("❌ إغلاق النفط")
+        if silver_open:
+            close_row.append("❌ إغلاق الفضة")
+        if close_row:
+            keyboard.append(close_row)
+
+    reply_markup = {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
+    text = """🚀 **Tona AI V2.0** - المستشار الذكي
+
+💙 أنا هنا لمساعدتك في تحليل النفط والفضة.
+
+📌 استخدم الأزرار أو اكتب /start للقائمة."""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": reply_markup,
+            "parse_mode": "HTML"
+        }, timeout=10)
+    except Exception as e:
+        logger.error(f"❌ فشل إرسال القائمة: {e}")
+
+
+def analyze_timeframes(asset_type: str) -> Dict[str, str]:
+    result = {}
+    symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+    st_mult = 2.5 if asset_type == "oil" else 2.2
+    timeframes = {"5m": "Min5", "15m": "Min15", "1h": "Min60", "4h": "Hour4"}
+
+    for name, interval in timeframes.items():
+        try:
+            data = get_mexc_candles(symbol, interval, 200)
+            if not data or not data.get("closes") or len(data["closes"]) < 50:
+                result[name] = "محايد ⚪"
+                continue
+            st_result = calculate_supertrend_vpt_correct(data, st_mult=st_mult, st_period=100, vpt_len=10)
+            if st_result is None:
+                closes = data["closes"]
+                if len(closes) >= 20:
+                    sma_short = sum(closes[-5:]) / 5
+                    sma_long = sum(closes[-20:]) / 20
+                    if sma_short > sma_long * 1.003:
+                        result[name] = "صاعد 📈"
+                    elif sma_short < sma_long * 0.997:
+                        result[name] = "هابط 📉"
+                    else:
+                        result[name] = "محايد ⚪"
+                else:
+                    result[name] = "محايد ⚪"
+                continue
+            st_line_arr, trend, _ = st_result
+            if not trend or len(trend) == 0:
+                result[name] = "محايد ⚪"
+                continue
+            result[name] = "صاعد 📈" if trend[-1] == 1 else "هابط 📉" if trend[-1] == -1 else "محايد ⚪"
+        except Exception as e:
+            logger.warning(f"⚠️ فشل تحليل {name} لـ {asset_type}: {e}")
+            result[name] = "محايد ⚪"
+    return result
+
+
+def handle_analysis(asset_type: str, chat_id: str):
+    logger.info(f"🔍 [handle_analysis] بدء تحليل {asset_type} لـ {chat_id}")
+    try:
+        queue_telegram_message(f"🔍 جاري التحليل الشامل لـ {'النفط' if asset_type == 'oil' else 'الفضة'}...", chat_id)
+    except:
+        pass
 
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-        resp = requests.post(url, json={
-            "url": webhook_url,
-            "allowed_updates": ["message"]
-        }, timeout=10)
+        symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+        data = get_mexc_candles(symbol, "Min15", 200)
+        if not data or not data.get("closes"):
+            queue_telegram_message(f"⚠️ تعذر جلب بيانات {'النفط' if asset_type == 'oil' else 'الفضة'}", chat_id)
+            return
 
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get('ok', False):
-                logger.info(f"✅ Webhook مسجل بنجاح: {webhook_url}")
-                return True
-            else:
-                logger.error(f"❌ فشل تسجيل Webhook: {data}")
-                return False
-        else:
-            logger.error(f"❌ خطأ في تسجيل Webhook: {resp.status_code} - {resp.text}")
-            return False
+        open_trade = get_current_open_trade(asset_type)
+        ai_analysis = AI_CORE.analyze_market(asset_type, data, open_trade)
+
+        if 'error' in ai_analysis:
+            queue_telegram_message(f"⚠️ {ai_analysis['error']}", chat_id)
+            return
+
+        asset_label = "النفط" if asset_type == "oil" else "الفضة"
+        analysis_text = ai_analysis.get('ai_analysis_text', '')
+        score = ai_analysis.get('score', 50)
+        evaluation = ai_analysis.get('evaluation', 'متوسط')
+        risk = ai_analysis.get('risk_level', 1)
+        price = ai_analysis.get('full_analysis', {}).get('price', 0)
+
+        if price == 0 and data and data.get("closes"):
+            price = data["closes"][-1]
+
+        if not analysis_text:
+            full = ai_analysis.get('full_analysis', {})
+            rsi = full.get('rsi', 50)
+            adx = full.get('adx', 20)
+            macd = full.get('macd', 0)
+            atr = full.get('atr', 0)
+            atr_pct = (atr / price * 100) if price > 0 else 0
+            timeframes = full.get('timeframes', {})
+            bullish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'صاعد')
+            bearish = sum(1 for tf in timeframes.values() if tf.get('trend') == 'هابط')
+            support = full.get('indicators', {}).get('support_resistance', {}).get('s1', price * 0.98 if price > 0 else 0)
+            resistance = full.get('indicators', {}).get('support_resistance', {}).get('r1', price * 1.02 if price > 0 else 0)
+
+            analysis_text = f"⚠️ لم يتمكن النموذج من توليد تحليل نصي. إليك ملخص المؤشرات:\n"
+            analysis_text += f"• السعر: ${price:.2f}\n" if price > 0 else "• السعر: غير متوفر\n"
+            analysis_text += f"• RSI: {rsi:.1f}\n"
+            analysis_text += f"• ADX: {adx:.1f}\n"
+            analysis_text += f"• MACD: {macd:.4f}\n"
+            analysis_text += f"• ATR: ${atr:.2f} ({atr_pct:.2f}%)\n"
+            analysis_text += f"• الفريمات: {bullish} صاعدة / {bearish} هابطة\n"
+            if support > 0 and resistance > 0:
+                analysis_text += f"• الدعم: ${support:.2f} | المقاومة: ${resistance:.2f}\n"
+            analysis_text += f"• التقييم العام: {evaluation} ({score}/100)\n"
+            analysis_text += "\n💡 يُرجى المحاولة مرة أخرى للحصول على تحليل نصي من النموذج."
+
+        price_str = f"${price:.2f}" if price > 0 else "غير متوفر"
+        msg = f"📊 **تحليل {asset_label} الشامل**\n"
+        msg += f"💰 السعر: {price_str} | التقييم: {evaluation} ({score}/100) | الخطر: {risk}/3\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg += f"🧠 **تحليل Tona AI:**\n{analysis_text}"
+
+        if open_trade:
+            entry = open_trade.get('entry_price', 0)
+            trade_type = open_trade.get('type', 'BUY')
+            profit_pct = ((price - entry) / entry * 100) if trade_type == "BUY" and entry > 0 else ((entry - price) / entry * 100) if entry > 0 else 0
+            msg += f"\n\n📈 **الصفقة المفتوحة:** {trade_type} @ ${safe_price(entry)} | {profit_pct:+.2f}%"
+            msg += f"\n🛡️ وقف الخسارة: ${safe_price(open_trade.get('sl'))}"
+            msg += f"\n🎯 الهدف: ${safe_price(open_trade.get('tp'))}"
+
+        msg += "\n\n💙 Tona AI: أنا هنا لمساعدتك!"
+
+        logger.info(f"✅ تم بناء التحليل لـ {asset_type} (طول: {len(msg)})")
+        queue_telegram_message(msg, chat_id)
+
     except Exception as e:
-        logger.error(f"❌ استثناء في تسجيل Webhook: {e}")
-        return False
+        logger.error(f"❌ [handle_analysis] استثناء: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        queue_telegram_message(f"⚠️ حدث خطأ أثناء التحليل: {str(e)[:100]}", chat_id)
 
 
-if __name__ == "__main__":
-    logger.info("=" * 60)
-    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي (بدء الخيوط عند أول طلب)")
-    logger.info("💙 الاسم: Tona AI")
-    logger.info("👨‍💻 المطور: بسام الحوباني")
-    logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
-    logger.info("=" * 60)
+def handle_position_status(chat_id: str):
+    try:
+        msg = "📊 **وضع الصفقات الحالية**\n"
+        msg += "━" * 30 + "\n\n"
 
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN غير موجود!")
-    else:
-        logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
+        has_trade = False
+        for asset_type in ["oil", "silver"]:
+            trade = get_current_open_trade(asset_type)
+            if not trade:
+                msg += f"{'🛢️' if asset_type == 'oil' else '🥈'} **{asset_type}**: لا توجد صفقة مفتوحة\n\n"
+                continue
 
-    if not CHAT_ID:
-        logger.error("❌ CHAT_ID غير موجود!")
-    else:
-        logger.info(f"✅ CHAT_ID: {CHAT_ID}")
+            has_trade = True
+            asset_label = "النفط" if asset_type == "oil" else "الفضة"
+            entry = trade.get('entry_price', 0)
+            trade_type = trade.get('type', 'BUY')
+            sl = trade.get('sl')
+            tp = trade.get('tp')
 
-    os.makedirs("learning_data", exist_ok=True)
-    os.makedirs("learning_data/backups", exist_ok=True)
+            symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+            data = get_mexc_candles(symbol, "Min1", 5)
+            current_price = data["closes"][-1] if data and data.get("closes") else entry
 
-    cleanup_stuck_trades(TRADING_CORE)
+            profit_pct = ((current_price - entry) / entry * 100) if trade_type == "BUY" else ((entry - current_price) / entry * 100)
+            profit_dollars = AccountingSystem.calculate_profit_dollars(entry, current_price, trade_type)
 
-    if set_webhook():
-        logger.info("✅ Webhook مسجل بنجاح")
-    else:
-        logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
+            msg += f"🛢️ **{asset_label}**\n"
+            msg += f"   • النوع: {trade_type}\n"
+            msg += f"   • الدخول: ${safe_price(entry)}\n"
+            msg += f"   • الحالي: ${safe_price(current_price)}\n"
+            msg += f"   • الربح/خسارة: {profit_pct:+.2f}% (${profit_dollars:+.2f})\n"
+            msg += f"   • وقف الخسارة: ${safe_price(sl)}\n"
+            msg += f"   • الهدف: ${safe_price(tp)}\n"
+            msg += f"   • RR: {trade.get('rr', 0):.2f}\n"
+            msg += f"   • المصدر: {'يدوي' if trade.get('source') == 'manual' else 'تلقائي'}\n\n"
 
-    # تشغيل خادم Flask (الخيوط ستبدأ عند أول طلب)
-    flask_thread = threading.Thread(target=run_flask, name="Flask", daemon=True)
-    flask_thread.start()
-    logger.info("🌐 خادم Flask يعمل (الخيوط الخلفية ستُبدأ عند أول طلب)")
+        if not has_trade:
+            msg += "🔄 لا توجد صفقات مفتوحة حالياً.\n"
+            msg += "💡 يمكنك فتح صفقة يدوياً عبر زر '📌 فتح صفقة يدوياً'"
 
-    # إرسال رسالة تأكيد بدء التشغيل
-    if CHAT_ID and TELEGRAM_TOKEN:
+        queue_telegram_message(msg, chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ [handle_position_status] خطأ: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
+
+
+def handle_manual_open(chat_id: str):
+    msg = """📌 **فتح صفقة يدوياً**
+
+يرجى إرسال الأمر بالصيغة التالية:
+`فتح صفقة [نفط/فضة] [شراء/بيع] [السعر]`
+
+مثال:
+`فتح صفقة نفط شراء 85.50`
+`فتح صفقة فضة بيع 32.40`
+
+📌 سيتم حساب وقف الخسارة والهدف تلقائياً باستخدام ATR.
+💙 Tona AI: أنا هنا لمساعدتك!"""
+    queue_telegram_message(msg, chat_id)
+
+
+def handle_manual_open_command(text: str, chat_id: str):
+    try:
+        parts = text.split()
+        if len(parts) < 4:
+            queue_telegram_message("⚠️ الصيغة غير صحيحة. استخدم: `فتح صفقة [نفط/فضة] [شراء/بيع] [السعر]`", chat_id)
+            return
+
+        asset_str = parts[2]
+        type_str = parts[3]
         try:
-            test_msg = "🚀 **Tona AI V2.0 FINAL** جاهز للعمل!\n\n💙 أنا هنا لمساعدتك في تحليل النفط والفضة.\n\n📌 استخدم الأزرار أو اكتب /start للقائمة."
-            _send_telegram_message_direct(test_msg, CHAT_ID)
-            logger.info("📨 تم إرسال رسالة تأكيد بدء التشغيل")
-        except Exception as e:
-            logger.error(f"❌ فشل إرسال رسالة التأكيد: {e}")
+            price = float(parts[4]) if len(parts) > 4 else 0
+        except:
+            price = 0
 
-    logger.info("✅ الخادم يعمل - انتظر أول طلب لبدء الخيوط الخلفية.")
-    logger.info("💙 Tona AI: أنا هنا لمساعدتك في تحليل النفط والفضة!")
+        if asset_str not in ["نفط", "فضة"]:
+            queue_telegram_message("⚠️ الأصل غير معروف. استخدم 'نفط' أو 'فضة'", chat_id)
+            return
 
-    while True:
-        time.sleep(1)
+        if type_str not in ["شراء", "بيع"]:
+            queue_telegram_message("⚠️ النوع غير معروف. استخدم 'شراء' أو 'بيع'", chat_id)
+            return
+
+        if price <= 0:
+            queue_telegram_message("⚠️ السعر يجب أن يكون أكبر من 0", chat_id)
+            return
+
+        asset_type = "oil" if asset_str == "نفط" else "silver"
+        signal = "BUY" if type_str == "شراء" else "SELL"
+
+        symbol = "USOIL_USDT" if asset_type == "oil" else "SILVER_USDT"
+        data = get_mexc_candles(symbol, "Min15", 100)
+        atr = calculate_atr_14(data) if data else None
+
+        if atr and atr > 0:
+            sl_mult = 2.0
+            tp_mult = 3.0
+            if signal == "BUY":
+                sl = price - (atr * sl_mult)
+                tp = price + (atr * tp_mult)
+            else:
+                sl = price + (atr * sl_mult)
+                tp = price - (atr * tp_mult)
+            rr = tp_mult / sl_mult
+        else:
+            sl = price * 0.98 if signal == "BUY" else price * 1.02
+            tp = price * 1.03 if signal == "BUY" else price * 0.97
+            rr = 1.5
+
+        signal_data = {
+            "signal": signal,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "rr": rr
+        }
+
+        success = TRADING_CORE.open_trade(asset_type, signal_data, source="manual")
+        if success:
+            queue_telegram_message(f"✅ تم فتح صفقة {asset_str} يدوياً ({type_str}) عند ${safe_price(price)}", chat_id)
+        else:
+            queue_telegram_message(f"⚠️ فشل فتح صفقة {asset_str}. تأكد من عدم وجود صفقة مفتوحة.", chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ فشل فتح يدوي: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
+
+
+def handle_performance_report(chat_id: str):
+    try:
+        msg = "📊 **تقرير الأداء الشامل**\n"
+        msg += "━" * 30 + "\n\n"
+
+        total_trades = 0
+        total_wins = 0
+        total_losses = 0
+        total_profit = 0.0
+
+        for asset_type in ["oil", "silver"]:
+            history = load_trades_history(asset_type)
+            trades = history.get('trades', [])
+            closed = [t for t in trades if t.get('status') == 'closed']
+
+            if not closed:
+                msg += f"{'🛢️' if asset_type == 'oil' else '🥈'} **{asset_type}**: لا توجد صفقات مغلقة\n\n"
+                continue
+
+            wins = [t for t in closed if (t.get('profit_dollars', 0) or 0) > 0]
+            losses = [t for t in closed if (t.get('profit_dollars', 0) or 0) <= 0]
+            profit = sum((t.get('profit_dollars', 0) or 0) for t in closed)
+            win_rate = len(wins) / len(closed) * 100 if closed else 0
+
+            msg += f"{'🛢️' if asset_type == 'oil' else '🥈'} **{asset_type}**\n"
+            msg += f"   • إجمالي الصفقات: {len(closed)}\n"
+            msg += f"   • رابحة: {len(wins)} | خاسرة: {len(losses)}\n"
+            msg += f"   • نسبة النجاح: {win_rate:.1f}%\n"
+            msg += f"   • إجمالي الربح: ${profit:.2f}\n\n"
+
+            total_trades += len(closed)
+            total_wins += len(wins)
+            total_losses += len(losses)
+            total_profit += profit
+
+        if total_trades > 0:
+            total_win_rate = total_wins / total_trades * 100
+            msg += "━" * 30 + "\n"
+            msg += f"📊 **الإجمالي**\n"
+            msg += f"   • إجمالي الصفقات: {total_trades}\n"
+            msg += f"   • نسبة النجاح الكلية: {total_win_rate:.1f}%\n"
+            msg += f"   • إجمالي الربح: ${total_profit:.2f}\n"
+
+        queue_telegram_message(msg, chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ فشل تقرير الأداء: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
+
+
+def handle_learning_report(chat_id: str):
+    try:
+        lessons = load_deep_lessons()
+        scenarios = load_scenarios()
+        profile = load_market_profile()
+
+        msg = "🧠 **تقرير التعلم العميق**\n"
+        msg += "━" * 30 + "\n\n"
+
+        msg += "📊 **شخصية السوق الحالية:**\n"
+        msg += f"🛢️ النفط: {profile.get('oil', 'لا توجد بيانات')[:200]}\n\n"
+        msg += f"🥈 الفضة: {profile.get('silver', 'لا توجد بيانات')[:200]}\n\n"
+        msg += f"📅 آخر تحديث: {profile.get('last_updated', 'غير معروف')}\n\n"
+
+        msg += "📚 **الدروس المستفادة:**\n"
+        if lessons:
+            for i, lesson in enumerate(lessons[-10:], 1):
+                msg += f"   {i}. {lesson[:100]}\n"
+        else:
+            msg += "   ℹ️ لا توجد دروس مسجلة بعد\n"
+        msg += "\n"
+
+        msg += "📋 **السيناريوهات المسجلة:**\n"
+        if scenarios:
+            for s in scenarios[-5:]:
+                msg += f"   • {s.get('condition', '')[:50]}... ({s.get('occurrences', 0)} تكرار)\n"
+        else:
+            msg += "   ℹ️ لا توجد سيناريوهات مسجلة بعد\n"
+
+        msg += "\n💙 Tona AI: التعلم مستمر... كل صفقة تضيف خبرة جديدة."
+        queue_telegram_message(msg, chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ فشل تقرير التعلم: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
+
+
+def handle_intelligence_report(chat_id: str):
+    try:
+        queue_telegram_message("📰 جاري توليد التقرير الاستخباراتي...", chat_id)
+
+        oil_history = load_trades_history("oil")
+        silver_history = load_trades_history("silver")
+        all_trades = oil_history.get('trades', []) + silver_history.get('trades', [])
+        closed_trades = [t for t in all_trades if t.get('status') == 'closed']
+
+        if len(closed_trades) < 3:
+            queue_telegram_message("⚠️ لا توجد بيانات كافية لتوليد تقرير استخباراتي (يحتاج 3 صفقات على الأقل)", chat_id)
+            return
+
+        profile = load_market_profile()
+        market_context = f"النفط: {profile.get('oil', '')}\nالفضة: {profile.get('silver', '')}"
+
+        report = AI_CORE.generate_intelligence_report("النفط والفضة", closed_trades, market_context)
+        queue_telegram_message(f"📰 **تقرير استخباراتي**\n\n{report}", chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ فشل التقرير الاستخباراتي: {e}")
+        queue_telegram_message(f"⚠️ حدث خطأ: {str(e)[:100]}", chat_id)
+
+
+def close_trade_manual(asset_type: Optional[str], chat_id: str):
+    if asset_type:
+        open_trade = get_current_open_trade(asset_type)
+        if not open_trade:
+            queue_telegram_message(f"⚠️ لا توجد صفقة {asset_type} مفتوحة", chat_id)
+            return
+        TRADING_CORE.close_trade(asset_type, "أمر يدوي من المستخدم")
+        queue_telegram_message(f"✅ تم إغلاق صفقة {asset_type} يدوياً", chat_id)
+    else:
+        oil_trade = get_current_open_trade("oil")
+        silver_trade = get_current_open_trade("silver")
+
+        if not oil_trade and not silver_trade:
+            queue_telegram_message("⚠️ لا توجد صفقات مفتوحة للإغلاق", chat_id)
+            return
+
+        if oil_trade and silver_trade:
+            queue_telegram_message("⚠️ توجد صفقتان مفتوحتان. استخدم:\n• `أغلق النفط`\n• `أغلق الفضة`", chat_id)
+            return
+
+        if oil_trade:
+            TRADING_CORE.close_trade("oil", "أمر يدوي من المستخدم")
+            queue_telegram_message("✅ تم إغلاق صفقة النفط يدوياً", chat_id)
+        else:
+            TRADING_CORE.close_trade("silver", "أمر يدوي من المستخدم")
+            queue_telegram_message("✅ تم إغلاق صفقة الفضة يدوياً", chat_id)
+
+
+def handle_message(text: str, chat_id: str):
+    clean_text = text.strip()
+    logger.info(f"📩 [handle_message] رسالة من {chat_id}: '{clean_text}'")
+
+    if clean_text in ["/start", "قائمة", "منيو", "/menu"]:
+        send_main_menu(chat_id)
+        return
+
+    if clean_text in ["🛢️ تحليل النفط", "نفط", "oil"]:
+        logger.info("🔍 [handle_message] بدء تحليل النفط")
+        handle_analysis("oil", chat_id)
+        return
+
+    if clean_text in ["🥈 تحليل الفضة", "فضة", "silver"]:
+        logger.info("🔍 [handle_message] بدء تحليل الفضة")
+        handle_analysis("silver", chat_id)
+        return
+
+    if clean_text in ["🔍 وضع الصفقة الحالية", "وضع الصفقة", "حالة"]:
+        handle_position_status(chat_id)
+        return
+
+    if clean_text in ["📌 فتح صفقة يدوياً", "فتح يدوي"]:
+        handle_manual_open(chat_id)
+        return
+
+    if clean_text in ["📊 تقرير الأداء", "إحصائيات"]:
+        handle_performance_report(chat_id)
+        return
+
+    if clean_text in ["🧠 تقرير التعلم العميق", "تقرير التعلم"]:
+        handle_learning_report(chat_id)
+        return
+
+    if clean_text in ["📰 تقرير استخباراتي", "استخبارات"]:
+        handle_intelligence_report(chat_id)
+        return
+
+    if clean_text in ["❌ إغلاق النفط", "أغلق النفط"]:
+        close_trade_manual("oil", chat_id)
+        return
+
+    if clean_text in ["❌ إغلاق الفضة", "أغلق الفضة"]:
+        close_trade_manual("silver", chat_id)
+        return
+
+    if clean_text in ["❌ إغلاق الصفقة", "إغلاق"]:
+        close_trade_manual(None, chat_id)
+        return
+
+    if clean_text.startswith("فتح صفقة"):
+        handle_manual_open_command(clean_text, chat_id)
+        return
+
+    queue_telegram_message(f"💙 Tona AI: أمر غير معروف. استخدم الأزرار أو اكتب /start للقائمة.", chat_id)
+
+
+def safe_price(value, default="N/A"):
+    if value is None:
+        return default
+    try:
+        return f"{float(value):.2f}"
+    except (ValueError, TypeError):
+        return default
         
 # ====================================================================================
 # 📦 PART 12: التشغيل الرئيسي
