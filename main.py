@@ -2195,7 +2195,7 @@ def perform_comprehensive_analysis(asset_type: str, data: Dict, open_trade: Opti
 
 
 # ====================================================================================
-# 📦 PART 10: بوابة المستخدم (معدل - مع بدء الخيوط عند أول طلب)
+# 📦 PART 10: بوابة المستخدم (معدل - مع تأخير بدء الخيوط)
 # ====================================================================================
 
 app = Flask(__name__)
@@ -2209,42 +2209,56 @@ _BACKGROUND_THREADS_STARTED = False
 _BACKGROUND_THREADS_LOCK = threading.Lock()
 
 def start_background_threads():
-    """بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب)"""
+    """بدء الخيوط الخلفية (يتم استدعاؤها عند أول طلب مع تأخير)"""
     global _BACKGROUND_THREADS_STARTED
     with _BACKGROUND_THREADS_LOCK:
         if _BACKGROUND_THREADS_STARTED:
             return
-        logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
         
-        # بدء Scanner
-        scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
-        scanner_thread.start()
-        logger.info("✅ Scanner بدأ بنجاح")
+        # ✅ استخدام Timer لتأخير بدء الخيوط لمدة 2 ثانية
+        # هذا يضمن تحميل جميع الدوال (signal_scanner, monitor_loop) قبل البدء
+        def _delayed_start():
+            logger.info("🔄 بدء تشغيل الخيوط الخلفية (بعد أول طلب)...")
+            try:
+                # استيراد الدوال محلياً لتجنب NameError
+                from main import signal_scanner, monitor_loop
+                
+                scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
+                scanner_thread.start()
+                logger.info("✅ Scanner بدأ بنجاح")
+                
+                monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
+                monitor_thread.start()
+                logger.info("✅ Monitor بدأ بنجاح")
+                
+                global _BACKGROUND_THREADS_STARTED
+                _BACKGROUND_THREADS_STARTED = True
+                logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
+            except Exception as e:
+                logger.error(f"❌ فشل بدء الخيوط الخلفية: {e}")
         
-        # بدء Monitor
-        monitor_thread = threading.Thread(target=monitor_loop, args=(TRADING_CORE,), name="Monitor", daemon=True)
-        monitor_thread.start()
-        logger.info("✅ Monitor بدأ بنجاح")
-        
-        _BACKGROUND_THREADS_STARTED = True
-        logger.info("✅ جميع الخيوط الخلفية بدأت بنجاح")
+        # بدء Timer بعد 2 ثانية
+        timer = threading.Timer(2.0, _delayed_start)
+        timer.daemon = True
+        timer.start()
+        logger.info("⏳ تم جدولة بدء الخيوط الخلفية بعد 2 ثانية")
 
 
 @app.route('/')
 def home():
-    start_background_threads()  # بدء الخيوط عند أول طلب
+    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
     return "🚀 Tona AI V2.0 - البوت الاستشاري الذكي", 200
 
 
 @app.route('/ping')
 def ping():
-    start_background_threads()  # بدء الخيوط عند أول طلب
+    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
     return "Bot is alive!", 200
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    start_background_threads()  # بدء الخيوط عند أول طلب
+    start_background_threads()  # جدولة بدء الخيوط عند أول طلب
     try:
         update = request.get_json()
         if not update or 'message' not in update:
@@ -2399,7 +2413,6 @@ def handle_analysis(asset_type: str, chat_id: str):
         if price == 0 and data and data.get("closes"):
             price = data["closes"][-1]
 
-        # إذا كان النص التحليلي فارغاً، ننشئ نصاً احتياطياً
         if not analysis_text:
             full = ai_analysis.get('full_analysis', {})
             rsi = full.get('rsi', 50)
@@ -2782,7 +2795,7 @@ def safe_price(value, default="N/A"):
     try:
         return f"{float(value):.2f}"
     except (ValueError, TypeError):
-        return default
+        return default  
         
 # ====================================================================================
 # 📦 PART 11: التشغيل الرئيسي (معدل - مع إزالة بدء الخيوط المباشر)
