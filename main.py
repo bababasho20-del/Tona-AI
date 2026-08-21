@@ -2777,9 +2777,7 @@ def start_background_threads():
         
         logger.info("🔄 بدء تشغيل الخيوط الخلفية (محاولة)...")
         try:
-            # ✅ استيراد محلي للدوال من الملف نفسه
-            from main import signal_scanner, monitor_loop
-            
+            # الدوال تُعرّف لاحقاً في الملف، لكن تُستدعى فقط بعد اكتمال تحميل الوحدة
             scanner_thread = threading.Thread(target=signal_scanner, args=(TRADING_CORE,), name="Scanner", daemon=True)
             scanner_thread.start()
             logger.info("✅ Scanner بدأ بنجاح")
@@ -3528,53 +3526,6 @@ def set_webhook() -> bool:
         return False
 
 
-# ====================================================================================
-# ✅ بدء الخيوط الخلفية فوراً (خارج if __name__)
-# هذا يضمن تشغيلها في بيئة Gunicorn/Render
-# ====================================================================================
-
-logger.info("🔄 بدء تشغيل الخيوط الخلفية فوراً (من PART 11)...")
-start_background_threads()
-logger.info("✅ تم استدعاء start_background_threads() بنجاح من PART 11")
-
-
-# ====================================================================================
-# نقطة الدخول الرئيسية (للتشغيل المحلي فقط)
-# ====================================================================================
-
-if __name__ == "__main__":
-    logger.info("=" * 60)
-    logger.info("🚀 Tona AI V2.0 FINAL - البوت الاستشاري الذكي")
-    logger.info("💙 الاسم: Tona AI")
-    logger.info("👨‍💻 المطور: بسام الحوباني")
-    logger.info("🧠 جميع التحليلات والتوصيات تعتمد على Gemini + Groq")
-    logger.info("=" * 60)
-
-    if not TELEGRAM_TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN غير موجود!")
-    else:
-        logger.info(f"✅ TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
-
-    if not CHAT_ID:
-        logger.error("❌ CHAT_ID غير موجود!")
-    else:
-        logger.info(f"✅ CHAT_ID: {CHAT_ID}")
-
-    os.makedirs("learning_data", exist_ok=True)
-    os.makedirs("learning_data/backups", exist_ok=True)
-
-    cleanup_stuck_trades(TRADING_CORE)
-
-    if set_webhook():
-        logger.info("✅ Webhook مسجل بنجاح")
-    else:
-        logger.warning("⚠️ فشل تسجيل Webhook - تأكد من TELEGRAM_TOKEN و RENDER_EXTERNAL_URL")
-
-    # ✅ تشغيل خادم Flask (في الخيط الرئيسي)
-    port = int(os.environ.get('PORT', 10000))
-    logger.info("🌐 تشغيل خادم Flask على المنفذ %s", port)
-    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
-    
 # ====================================================================================
 # 📦 PART 12: التشغيل الرئيسي
 # ====================================================================================
