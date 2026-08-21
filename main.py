@@ -19,6 +19,9 @@ from datetime import datetime
 
 from flask import Flask, request, jsonify
 
+# Gunicorn/Render WSGI application
+app = Flask(__name__)
+
 # ----------------------------- logging -----------------------------
 logging.basicConfig(
     level=logging.INFO,
