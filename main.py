@@ -7,6 +7,11 @@
 
 import os, json, time, logging, threading, urllib.request, urllib.parse, urllib.error, html, re
 from datetime import datetime
+try:
+    from flask import Flask, jsonify
+except Exception:
+    Flask = None
+    jsonify = None
 
 # ----------------------------- Logging -----------------------------
 logging.basicConfig(
@@ -26,6 +31,11 @@ SIGNAL_CHECK_INTERVAL = int(os.getenv("SIGNAL_CHECK_INTERVAL", "60"))
 MONITORING_INTERVAL = int(os.getenv("MONITORING_INTERVAL", "300"))
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000"))
 HTTP_TIMEOUT = 15
+AI_COOLDOWN_SECONDS = int(os.getenv("AI_COOLDOWN_SECONDS", "8"))
+TELEGRAM_POLL_INTERVAL = 2
+LAST_AI_CALL = 0.0
+AI_LOCK = threading.Lock()
+TELEGRAM_LOCK = threading.Lock()
 
 ASSETS = {
     "oil": {"label": "النفط الخام", "symbol": "USOIL_USDT", "base": "Min15", "st_mult": 2.5},
@@ -216,15 +226,40 @@ SYSTEM_PROMPT = r"""
 """
 
 
+def compact_market(market):
+    """ضغط بيانات السوق قبل إرسالها للنموذج لمنع 413 مع الحفاظ على نافذة كافية للحساب."""
+    limits = {"5m": 50, "15m": 140, "1h": 50, "4h": 50}
+    out = {}
+    for tf, data in market.items():
+        if not data:
+            out[tf] = None
+            continue
+        n = limits.get(tf, 50)
+        start = max(0, len(data["closes"]) - n)
+        rows = []
+        for i in range(start, len(data["closes"])):
+            rows.append([
+                round(float(data["opens"][i]), 6),
+                round(float(data["highs"][i]), 6),
+                round(float(data["lows"][i]), 6),
+                round(float(data["closes"][i]), 6),
+                round(float(data["volumes"][i]), 6),
+            ])
+        out[tf] = {"format": "[open,high,low,close,volume]", "candles": rows}
+    return out
+
 def market_payload(asset, market):
     cfg = ASSETS[asset]
-    # نحافظ على البيانات الخام ولا نحسب مؤشرات خارجية.
     return {
         "asset": asset,
         "label": cfg["label"],
         "symbol": cfg["symbol"],
-        "strategy_parameters": {"base_timeframe": "15m", "st_multiplier": cfg["st_mult"], "st_period": 100, "vpt_len": 10, "confirmation_bars": 1, "sl_atr_mult": 2.0, "tp_atr_mult": 3.0},
-        "timeframes": market,
+        "strategy_parameters": {
+            "base_timeframe": "15m", "st_multiplier": cfg["st_mult"],
+            "st_period": 100, "vpt_len": 10, "confirmation_bars": 1,
+            "sl_atr_mult": 2.0, "tp_atr_mult": 3.0
+        },
+        "timeframes": compact_market(market),
     }
 
 # ----------------------------- AI Providers -----------------------------
@@ -273,28 +308,34 @@ def extract_json(text):
 
 
 def ai_analyze(asset, market, mode="scanner", position=None):
+    global LAST_AI_CALL
     payload = market_payload(asset, market)
     if position:
         payload["open_position"] = position
     user = json.dumps({"mode": mode, "market": payload}, ensure_ascii=False, separators=(",", ":"))
+    logger.info("[AI] %s payload=%d bytes mode=%s", asset, len(user.encode("utf-8")), mode)
 
-    raw = None
-    provider = None
-    if GROQ_API_KEY:
-        raw = groq_call(SYSTEM_PROMPT, user)
-        provider = "Groq"
-    if not raw and GEMINI_API_KEY:
-        raw = gemini_call(SYSTEM_PROMPT, user)
-        provider = "Gemini"
-    if not raw:
-        return None
-    result = extract_json(raw)
-    if not result:
+    # لا نرسل طلبين متتاليين إلى مزودي AI بسرعة واحدة، حتى لا نسبب 429.
+    with AI_LOCK:
+        wait = AI_COOLDOWN_SECONDS - (time.time() - LAST_AI_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        LAST_AI_CALL = time.time()
+
+    providers = []
+    if GROQ_API_KEY: providers.append(("Groq", groq_call))
+    if GEMINI_API_KEY: providers.append(("Gemini", gemini_call))
+    for provider, fn in providers:
+        raw = fn(SYSTEM_PROMPT, user)
+        if not raw:
+            continue
+        result = extract_json(raw)
+        if result:
+            result["provider"] = provider
+            result["raw_model_response"] = raw
+            return result
         logger.error("[AI] %s أعاد نصاً غير JSON", provider)
-        return None
-    result["provider"] = provider
-    result["raw_model_response"] = raw
-    return result
+    return None
 
 # ----------------------------- Telegram -----------------------------
 def telegram(method, payload=None):
@@ -544,10 +585,30 @@ def answer_chat(text, chat_id):
     else:
         send_message("⚠️ لا يتوفر نموذج AI حالياً.", chat_id)
 
+def telegram_prepare_for_polling():
+    """إزالة أي webhook قديم؛ getUpdates لا يعمل أثناء وجود webhook."""
+    if not TELEGRAM_TOKEN:
+        return False
+    try:
+        info = telegram("getWebhookInfo", {})
+        url = ((info or {}).get("result") or {}).get("url") or ""
+        if url:
+            logger.warning("[Telegram] webhook موجود: %s — سيتم حذفه قبل polling", url)
+        result = telegram("deleteWebhook", {"drop_pending_updates": False})
+        if result and result.get("ok"):
+            logger.info("[Telegram] جاهز لـ getUpdates (webhook removed)")
+            return True
+        logger.error("[Telegram] تعذر حذف webhook: %s", result)
+    except Exception as e:
+        logger.error("[Telegram] فشل تهيئة polling: %s", e)
+    return False
+
 # ----------------------------- Telegram polling -----------------------------
 def telegram_polling():
     global LAST_UPDATE_ID
-    logger.info("📨 [Telegram] بدأ polling")
+    if not telegram_prepare_for_polling():
+        logger.error("[Telegram] لم يتمكن البوت من تهيئة polling")
+    logger.info("📨 [Telegram] بدأ polling | pid=%s", os.getpid())
     while True:
         try:
             params = {"timeout":25}
@@ -561,27 +622,30 @@ def telegram_polling():
                 chat = msg.get("chat",{}).get("id")
                 threading.Thread(target=handle_text,args=(msg["text"],str(chat)),daemon=True,name="TelegramHandler").start()
         except Exception as e:
-            logger.error("[Telegram] polling: %s", e)
-            time.sleep(3)
+            msg = str(e)
+            if "409" in msg or "Conflict" in msg:
+                logger.error("[Telegram] 409 Conflict: يوجد مستهلك آخر أو webhook يعترض getUpdates. إعادة التهيئة بعد 15 ثانية.")
+                time.sleep(15)
+                telegram_prepare_for_polling()
+            else:
+                logger.error("[Telegram] polling: %s", e)
+                time.sleep(3)
 
-# ----------------------------- Flask / Gunicorn -----------------------------
-# Render runs this module with: gunicorn main:app
-# Gunicorn owns the HTTP port; the bot background loops run inside the single worker.
-from flask import Flask, jsonify
+# ----------------------------- Flask health app -----------------------------
+app = Flask(__name__) if Flask else None
 
-app = Flask(__name__)
+if app:
+    @app.get("/")
+    def home():
+        return "Tona AI Standalone V3 is running", 200
 
-@app.get("/ping")
-def ping():
-    return jsonify({
-        "ok": True,
-        "service": "Tona AI Standalone V2",
-        "scanner": True,
-        "time": datetime.utcnow().isoformat()
-    })
+    @app.get("/ping")
+    def ping():
+        return jsonify({"ok": True, "service": "Tona AI Standalone V3", "scanner": True})
 
-START_LOCK = threading.Lock()
+# ----------------------------- Background startup -----------------------------
 STARTED = False
+START_LOCK = threading.Lock()
 
 def start_background_threads():
     global STARTED
@@ -589,45 +653,22 @@ def start_background_threads():
         if STARTED:
             return
         STARTED = True
-
-        logger.info("=" * 70)
-        logger.info("🚀 Tona AI Standalone V2 starting")
-        logger.info("🧠 AI-only analysis: Gemini=%s Groq=%s", bool(GEMINI_API_KEY), bool(GROQ_API_KEY))
-        logger.info("📡 Strategy: 15m VPT + SuperTrend | 5m/1h/4h confirmation/context")
-        logger.info("📊 Scanner interval: %ss | Monitor interval: %ss", SIGNAL_CHECK_INTERVAL, MONITORING_INTERVAL)
-
-        if not TELEGRAM_TOKEN:
-            logger.warning("⚠️ TELEGRAM_TOKEN غير موجود")
-        if not (GROQ_API_KEY or GEMINI_API_KEY):
-            logger.warning("⚠️ لا يوجد مفتاح AI")
-
         load_state()
-
-        threading.Thread(
-            target=signal_scanner,
-            daemon=True,
-            name="Scanner"
-        ).start()
-
-        threading.Thread(
-            target=monitor_positions,
-            daemon=True,
-            name="Monitor"
-        ).start()
-
+        threading.Thread(target=signal_scanner, daemon=True, name="Scanner").start()
+        threading.Thread(target=monitor_positions, daemon=True, name="Monitor").start()
         if TELEGRAM_TOKEN:
-            threading.Thread(
-                target=telegram_polling,
-                daemon=True,
-                name="TelegramPolling"
-            ).start()
+            threading.Thread(target=telegram_polling, daemon=True, name="TelegramPolling").start()
+        logger.info("🚀 [BOOT] الخلفية بدأت مرة واحدة | pid=%s", os.getpid())
 
-        logger.info("✅ جميع الخيوط الأساسية بدأت")
+if app:
+    start_background_threads()
 
-# Gunicorn imports main:app inside its single worker.
-# Starting here ensures Scanner/Monitor/Telegram are started when the worker loads.
-start_background_threads()
+# ----------------------------- WSGI / Main -----------------------------
+
+def main():
+    start_background_threads()
+    while True:
+        time.sleep(60)
 
 if __name__ == "__main__":
-    # Local development only. Production uses Gunicorn.
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    main()
