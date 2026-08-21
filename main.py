@@ -7,7 +7,6 @@
 
 import os, json, time, logging, threading, urllib.request, urllib.parse, urllib.error, html, re
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ----------------------------- Logging -----------------------------
 logging.basicConfig(
@@ -565,38 +564,70 @@ def telegram_polling():
             logger.error("[Telegram] polling: %s", e)
             time.sleep(3)
 
-# ----------------------------- Health server (stdlib only) -----------------------------
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = json.dumps({"ok":True,"service":"Tona AI Standalone V2","time":datetime.utcnow().isoformat(),"scanner":True},ensure_ascii=False).encode()
-        self.send_response(200); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
-    def log_message(self, *args): return
+# ----------------------------- Flask / Gunicorn -----------------------------
+# Render runs this module with: gunicorn main:app
+# Gunicorn owns the HTTP port; the bot background loops run inside the single worker.
+from flask import Flask, jsonify
 
+app = Flask(__name__)
 
-def health_server():
-    port=int(os.getenv("PORT","10000"))
-    server=ThreadingHTTPServer(("0.0.0.0",port),HealthHandler)
-    logger.info("🌐 [Health] listening on :%s",port)
-    server.serve_forever()
+@app.get("/ping")
+def ping():
+    return jsonify({
+        "ok": True,
+        "service": "Tona AI Standalone V2",
+        "scanner": True,
+        "time": datetime.utcnow().isoformat()
+    })
 
-# ----------------------------- Main -----------------------------
-def main():
-    logger.info("="*70)
-    logger.info("🚀 Tona AI Standalone V2 starting")
-    logger.info("🧠 AI-only analysis: Gemini=%s Groq=%s", bool(GEMINI_API_KEY), bool(GROQ_API_KEY))
-    logger.info("📡 Strategy: 15m VPT + SuperTrend | 5m/1h/4h confirmation/context")
-    logger.info("📊 Scanner interval: %ss | Monitor interval: %ss", SIGNAL_CHECK_INTERVAL, MONITORING_INTERVAL)
-    if not TELEGRAM_TOKEN: logger.warning("⚠️ TELEGRAM_TOKEN غير موجود")
-    if not (GROQ_API_KEY or GEMINI_API_KEY): logger.warning("⚠️ لا يوجد مفتاح AI")
-    load_state()
-    threading.Thread(target=signal_scanner,daemon=True,name="Scanner").start()
-    threading.Thread(target=monitor_positions,daemon=True,name="Monitor").start()
-    if TELEGRAM_TOKEN:
-        threading.Thread(target=telegram_polling,daemon=True,name="TelegramPolling").start()
-    threading.Thread(target=health_server,daemon=True,name="HealthServer").start()
-    logger.info("✅ جميع الخيوط الأساسية بدأت")
-    while True:
-        time.sleep(60)
+START_LOCK = threading.Lock()
+STARTED = False
+
+def start_background_threads():
+    global STARTED
+    with START_LOCK:
+        if STARTED:
+            return
+        STARTED = True
+
+        logger.info("=" * 70)
+        logger.info("🚀 Tona AI Standalone V2 starting")
+        logger.info("🧠 AI-only analysis: Gemini=%s Groq=%s", bool(GEMINI_API_KEY), bool(GROQ_API_KEY))
+        logger.info("📡 Strategy: 15m VPT + SuperTrend | 5m/1h/4h confirmation/context")
+        logger.info("📊 Scanner interval: %ss | Monitor interval: %ss", SIGNAL_CHECK_INTERVAL, MONITORING_INTERVAL)
+
+        if not TELEGRAM_TOKEN:
+            logger.warning("⚠️ TELEGRAM_TOKEN غير موجود")
+        if not (GROQ_API_KEY or GEMINI_API_KEY):
+            logger.warning("⚠️ لا يوجد مفتاح AI")
+
+        load_state()
+
+        threading.Thread(
+            target=signal_scanner,
+            daemon=True,
+            name="Scanner"
+        ).start()
+
+        threading.Thread(
+            target=monitor_positions,
+            daemon=True,
+            name="Monitor"
+        ).start()
+
+        if TELEGRAM_TOKEN:
+            threading.Thread(
+                target=telegram_polling,
+                daemon=True,
+                name="TelegramPolling"
+            ).start()
+
+        logger.info("✅ جميع الخيوط الأساسية بدأت")
+
+# Gunicorn imports main:app inside its single worker.
+# Starting here ensures Scanner/Monitor/Telegram are started when the worker loads.
+start_background_threads()
 
 if __name__ == "__main__":
-    main()
+    # Local development only. Production uses Gunicorn.
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
