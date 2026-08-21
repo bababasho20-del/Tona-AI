@@ -14,3 +14,7 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: GROQ_MODEL
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
